@@ -2,39 +2,175 @@ from __future__ import annotations
 from typing import List, Callable, Optional, Dict, Union, TypeVar, Iterable, Tuple
 from decimal import Decimal, DefaultContext
 from dataclasses import dataclass, field, InitVar
-from copy import deepcopy
+from copy import deepcopy, copy
 
 
-Money = TypeVar('Money', Decimal, int)
+_Money = TypeVar('_Money', Tuple[Union[int, Decimal], Union[int, Decimal]], Decimal, int, float, str)
+
+Rate = TypeVar('Rate', Decimal, int)
 
 
-context = DefaultContext
+class Money:
+    _CONTEXT = DefaultContext.copy()
+
+    def __init__(self, val: _Money):
+        self._val = val
+        self._yuan, self._fen = self._cast(val)
+
+    def _cast(self, val: _Money) -> Tuple[Decimal, Decimal]:
+        if isinstance(val, str):
+            if val == 'inf' or val == '-inf':
+                return self.m(val), self.m(0)
+            if val.find(".") == -1:
+                return self.m(val), self.m(0)
+            yuan, fen = val.split('.')
+            assert len(fen) <= 2, f"fen must be no more than two digest, {fen} got"
+            return self.m(yuan), self.m(fen[:2])
+        if isinstance(val, tuple):
+            assert len(val) == 2, "tuple must have two items"
+            return val[0].quantize(Decimal('1.')), val[1].quantize(Decimal('1.'))
+        yuan = self.m(val)
+        fen = self.m(val * 100 % 100)
+        return yuan, fen
+
+    @classmethod
+    def m(cls, val) -> Decimal:
+        return Decimal(val, context=cls._CONTEXT)
+
+    @property
+    def val(self):
+        return self._val
+
+    @property
+    def yuan(self):
+        return self._yuan
+
+    @property
+    def fen(self):
+        return self._fen
+
+    @property
+    def total_fen(self):
+        return self._yuan * 100 + self._fen
+
+    @property
+    def is_nan(self):
+        return self.yuan.is_nan()
+
+    @property
+    def is_inf(self):
+        return self.yuan.is_infinite()
+
+    def __str__(self):
+        return f'{self.yuan}.{abs(self.fen):0>2}' if not self.is_inf else str(self.yuan)
+
+    def __repr__(self):
+        return self.__str__()
+
+    def __hash__(self):
+        return int(self.total_fen) if not self.is_inf else 2**32
+
+    def __neg__(self):
+        return self.__class__((-self.yuan, -self.fen))
+
+    def __abs__(self):
+        return copy(self) if self > 0 else -self
+
+    def __copy__(self):
+        return self.__class__((copy(self.yuan), copy(self.fen)))
+
+    def __add__(self, other: Union[_Money, Money]):
+        if not isinstance(other, self.__class__):
+            other = self.__class__(other)
+        yuan = self.yuan + other.yuan
+        fen = self.fen + other.fen
+        if fen > 100:
+            fen -= 100
+            yuan += 1
+        return self.__class__((yuan, fen))
+
+    def __radd__(self, other):
+        return self + other
+
+    def __sub__(self, other):
+        if not isinstance(other, self.__class__):
+            other = self.__class__(other)
+        yuan = self.yuan - other.yuan
+        fen = self.fen - other.fen
+        if fen < 0:
+            fen += 100
+            yuan -= 1
+        return self.__class__((yuan, fen))
+
+    def __rsub__(self, other):
+        return -(self - other)
+
+    def __mul__(self, other: Rate):
+        assert isinstance(other, (int, Decimal)), f"only can mul by int, Decimal; {other}, {other.__class__.__name__} got"
+        yuan = self.yuan * other
+        fen = self.fen * other / self.m(100)
+        return self.__class__(yuan) + self.__class__(fen)
+
+    def __rmul__(self, other: Rate):
+        return self * other
+
+    def __truediv__(self, other: Rate):
+        return self.__class__(self.yuan / other) + self.__class__(self.fen / other / self.m(100))
+
+    def __ge__(self, other: Union[_Money, Money]) -> bool:
+        if not isinstance(other, self.__class__):
+            other = self.__class__(other)
+        return self.total_fen >= other.total_fen
+
+    def __gt__(self, other: Union[_Money, Money]):
+        if not isinstance(other, self.__class__):
+            other = self.__class__(other)
+        return self.total_fen > other.total_fen
+
+    def __eq__(self, other: Union[_Money, Money]):
+        if not isinstance(other, self.__class__):
+            other = self.__class__(other)
+        return self.total_fen == other.total_fen
+
+    def __le__(self, other: Union[_Money, Money]):
+        if not isinstance(other, self.__class__):
+            other = self.__class__(other)
+        return self.total_fen <= other.total_fen
+
+    def __lt__(self, other: Union[_Money, Money]):
+        if not isinstance(other, self.__class__):
+            other = self.__class__(other)
+        return self.total_fen < other.total_fen
 
 
-def m(s: Union[str, Money]) -> Money:
-    return Decimal(s, context=context)
+def m(s: _Money) -> Money:
+    return Money(s)
 
 
-def is_nan(money: Money) -> bool:
-    if isinstance(money, Decimal):
-        return money.is_nan()
-    return False
+def r(s: Union[str, int]) -> Rate:
+    return Money.m(s)
 
 
-def is_inf(money: Money) -> bool:
-    if isinstance(money, Decimal):
-        return money.is_infinite()
+def is_nan(money: Union[Money, None]) -> bool:
+    if isinstance(money, Money):
+        return money.is_nan
+    return True
+
+
+def is_inf(money: Union[Money, None]) -> bool:
+    if isinstance(money, Money):
+        return money.is_inf
     return False
 
 
 DEFAULT_TAX = {
-    m('36_000'): m('0.03'),
-    m('144_000'): m('0.10'),
-    m('300_000'): m('0.20'),
-    m('420_000'): m('0.25'),
-    m('660_000'): m('0.30'),
-    m('960_000'): m('0.35'),
-    m('inf'): m('0.45')
+    m('36_000'): r('0.03'),
+    m('144_000'): r('0.10'),
+    m('300_000'): r('0.20'),
+    m('420_000'): r('0.25'),
+    m('660_000'): r('0.30'),
+    m('960_000'): r('0.35'),
+    m('inf'): r('0.45')
 }
 
 
@@ -42,7 +178,7 @@ DEFAULT_TAX = {
 class TaxStepRate:
     start: Money = m('0')
     limit: Money = m('inf')
-    rate: Money = m('0')
+    rate: Rate = r('0')
     quick_sub: Money = field(init=False, default=m('0'))
     next_step: Optional[TaxStepRate] = None
 
@@ -62,7 +198,7 @@ class TaxStepRate:
 class SalaryTaxRate:
     tax_steps: InitVar[List[TaxStepRate]]
     tax_rate: TaxStepRate = field(init=False)
-    quick_sub_rate: Money = field(init=False, default=m('1'))
+    quick_sub_rate: Rate = field(init=False, default=r('1'))
 
     def __post_init__(self, tax_steps: List[TaxStepRate]):
         self.tax_rate = cur_tax = tax_steps[0]
@@ -92,7 +228,7 @@ class SalaryTaxRate:
         return '\n'.join(map(lambda x: x.pretty(func), self))
 
     @classmethod
-    def from_dict(cls, tax_config: Dict[Money, Money], key_as_limit: bool = True) -> SalaryTaxRate:
+    def from_dict(cls, tax_config: Dict[Money, Rate], key_as_limit: bool = True) -> SalaryTaxRate:
         if not key_as_limit:
             raise NotImplementedError
         start = m('0')
@@ -107,7 +243,7 @@ class SalaryTaxRate:
 
 @dataclass
 class BonusTaxRate(SalaryTaxRate):
-    quick_sub_rate: Money = field(init=False, default=m('1') / m('12'))
+    quick_sub_rate: Rate = field(init=False, default=r('1') / r('12'))
 
     def __repr__(self):
         return super().__repr__()
@@ -124,13 +260,13 @@ class TaxDetail:
     def __post_init__(self):
         if is_nan(self.income):
             self.income = self.salary - self.tax - self.fund - self.insurance
-        assert self.validate()
+        assert self.validate(), str(self)
 
     def validate(self):
         return self.salary - self.income == self.tax + self.fund + self.insurance
 
     def pretty(self, func: Callable = print, idx: Optional[int] = None):
-        pretty = f"{self.income:.2f} = {self.salary:.2f} - ({self.fund:.2f} + {self.insurance:.2f}) - {self.tax:.2f}"
+        pretty = f"{self.income} = {self.salary} - ({self.fund} + {self.insurance}) - {self.tax}"
         if idx is not None:
             pretty = f"{idx:>2}: {pretty}"
         func(pretty)
@@ -257,8 +393,8 @@ class Taxpayer:
     start: Money = m('5000')
     fund_base_limit: Money = m('28017')
     insurance_base_limit: Money = m('28017')
-    fund_rate: Money = m('0.07')
-    insurance_rate: Money = m('0.105')
+    fund_rate: Rate = r('0.07')
+    insurance_rate: Rate = r('0.105')
 
     def calc_salaries(self, salaries: Union[List[Salary], YearlyPackage], additional_free: Money = m('0'),
                       fund_base: Money = m('inf'), insurance_base: Money = m('inf'), tax_klass=AccTax) -> Union[AccTax, YearlyTax]:
@@ -353,6 +489,6 @@ if __name__ == '__main__':
 
     i.calc_package(YearlyPackage.from_list([m(15_000)] * 12, [m(20_000), m(24_000)])).pretty(include_detail=True)
 
-    print('all possiable:')
+    print('all possible:')
     for bonus, yearly_tax in i.calc_all_package(YearlyPackage.from_list([m(5_000)] * 12, [m(96_000), m(24_000)])).items():
         yearly_tax.pretty(lambda x: print(f'{bonus} as Bonus: {x}'))
