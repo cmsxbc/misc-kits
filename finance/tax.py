@@ -397,7 +397,7 @@ class Taxpayer:
     insurance_rate: Rate = r('0.105')
 
     def calc_salaries(self, salaries: Union[List[Salary], YearlyPackage], additional_free: Money = m('0'),
-                      fund_base: Money = m('inf'), insurance_base: Money = m('inf'), tax_klass=AccTax) -> Union[AccTax, YearlyTax]:
+                      force_fund_base: Money = m('inf'), force_insurance_base: Money = m('inf'), tax_klass=AccTax) -> Union[AccTax, YearlyTax]:
         if isinstance(salaries, YearlyPackage):
             salaries = salaries.get_salaries()
         assert len(salaries) == 12, "only support one-year monthly salaries"
@@ -405,8 +405,8 @@ class Taxpayer:
         tax_table = iter(self.salary_tax_rate)
         cur_tax_step = next(tax_table)
         for idx, salary in enumerate(salaries):
-            fund_base = min(self.fund_base_limit, fund_base, salary)
-            insurance_base = min(self.insurance_base_limit, insurance_base, salary)
+            fund_base = min(self.fund_base_limit, force_fund_base, salary)
+            insurance_base = min(self.insurance_base_limit, force_insurance_base, salary)
             fund = fund_base * self.fund_rate
             insurance = insurance_base * self.insurance_rate
 
@@ -478,17 +478,17 @@ if __name__ == '__main__':
     # tax = i.calc_salaries(YearlyPackage.from_list(salaries))
     # tax.pretty(include_detail=True)
 
-    # tax = i.calc_salaries(YearlyPackage.from_config([
-    #     (m(10_000), 2),
-    #     (m(12_000), 1),
-    #     (m(14_000), 9)
-    # ]))
-    # tax.pretty(include_detail=True)
+    tax = i.calc_salaries(YearlyPackage.from_config([
+        (m(12_000), 2),
+        (m(13_200), 1),
+        (m(15_000), 9),
+    ]), additional_free=m(1500), force_fund_base=m('12000'), force_insurance_base=m('12000'))
+    tax.pretty(include_detail=True)
 
     # i.calc_bonus(20_000).pretty()
 
-    i.calc_package(YearlyPackage.from_list([m(15_000)] * 12, [m(20_000), m(24_000)])).pretty(include_detail=True)
+    # i.calc_package(YearlyPackage.from_list([m(15_000)] * 12, [m(20_000), m(24_000)])).pretty(include_detail=True)
 
-    print('all possible:')
-    for bonus, yearly_tax in i.calc_all_package(YearlyPackage.from_list([m(5_000)] * 12, [m(96_000), m(24_000)])).items():
-        yearly_tax.pretty(lambda x: print(f'{bonus} as Bonus: {x}'))
+    # print('all possible:')
+    # for bonus, yearly_tax in i.calc_all_package(YearlyPackage.from_list([m(5_000)] * 12, [m(96_000), m(24_000)])).items():
+    #     yearly_tax.pretty(lambda x: print(f'{bonus} as Bonus: {x}'))
