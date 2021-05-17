@@ -131,6 +131,7 @@ struct thread_args {
     long total_times;
     struct result_queue* result_head;
     struct result_queue** result_tail;
+    pid_t tid;
 };
 
 void set_default_thead_args(struct thread_args *args, struct result_queue *result_head) {
@@ -154,6 +155,7 @@ int thread_func(void * args) {
     long top10n = max_times - max_times * 9 / 10;
     heap_t heap = create_heap(top10n);
     // printf("times, mean, [min, %ldth, max]\n", top10n);
+    targs->tid = gettid();
     while (total_times -- > 0) {
         nsec_t s = 0, e = 0, d = 0;
         nsec_t total_diff = 0, max_diff = 0, min_diff = (1ULL << 63) - 1;
@@ -188,11 +190,32 @@ int thread_func(void * args) {
     return thrd_success;
 }
 
+static inline const char * get_policy_name(int policy) {
+    switch (policy) {
+        case SCHED_OTHER:
+            return "SCHED_NORMAL";
+        case SCHED_BATCH:
+            return "SCHED_BATCH";
+        case SCHED_RR:
+            return "SCHED_RR";
+        case SCHED_FIFO:
+            return "SCHED_FIFO";
+        case SCHED_DEADLINE:
+            return "SCHED_DEADLINE";
+        case SCHED_IDLE:
+            return "SCHED_IDLE";
+        default:
+            return "SCHED_UNKNOWN";
+    }
+}
+
 int main(int argc, char const *argv[]) {
     if (argc <= 1) {
         printf("usage: %s policy1 [policy2 [policy3 ...]]", argv[0]);
         exit(2);
     }
+    struct sched_param param = {0};
+    set_scheduler(SCHED_OTHER, &param);
     int thread_count = argc - 1;
     struct thread_args *args = calloc(thread_count, sizeof(struct thread_args));
     for (int i = 0; i < thread_count; i++) {
@@ -215,14 +238,15 @@ int main(int argc, char const *argv[]) {
     }
     thrd_t *threads = calloc(thread_count, sizeof(thrd_t));
     for (int i = 0; i < thread_count; i++) {
+        printf("create thread %d with policy %s\n", i, get_policy_name(args[i].policy));
         if (thrd_create(&threads[i], thread_func, &args[i]) != thrd_success) {
             exit_api_error("create thread failed");
         }
     }
     int nr_running = thread_count;
-    struct timespec sleep_main = {0, 1000000};
+    pid_t pid = getpid();
     do {
-        thrd_sleep(&sleep_main, NULL);
+        sched_yield();
         int nr_result = 0;
         for (int i = 0; i < thread_count; i ++) {
             if (args[i].result_head->next != NULL) {
@@ -232,7 +256,8 @@ int main(int argc, char const *argv[]) {
         if (nr_result < nr_running) {
             continue;
         }
-        printf("threads, policy, mean, [min, top10n th, max]\n");
+        printf("pid: %d\n", pid);
+        printf("  threads,          policy,  timestamp,      mean, [      min,       P90,      max]\n");
         for (int i = 0; i < thread_count; i ++) {
             struct result_queue *result = args[i].result_head->next;
             if (result == NULL) {
@@ -242,8 +267,9 @@ int main(int argc, char const *argv[]) {
                 printf("thread %d finished!\n", i);
                 nr_running --;
             } else {
-                printf("%d, %d, %lld, [%lld, %lld, %lld]\n", i, args[i].policy, result->mean_diff, result->min_diff, result->top10n_diff,
-                       result->max_diff);
+                printf("%d(%7d), %14s, %10ld, %9lld, [%9lld, %9lld, %9lld]\n", i, args[i].tid,
+                       get_policy_name(args[i].policy), result->timestamp,
+                       result->mean_diff, result->min_diff, result->top10n_diff, result->max_diff);
             }
             free(args[i].result_head);
             args[i].result_head = result;
