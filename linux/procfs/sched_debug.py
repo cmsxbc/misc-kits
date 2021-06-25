@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-import re
 
 
 SD_PATH = '/proc/sched_debug'
@@ -27,8 +26,7 @@ def get_loadavg_param():
         return nr_running, nr_uninterruptible
 
 
-def get_running_task(with_key_line=True):
-    regex = re.compile('\s+')
+def get_running_task(state='R', with_key_line=True):
     with open(SD_PATH) as f:
         cur_cpu = None
         in_task_list = 0
@@ -42,7 +40,6 @@ def get_running_task(with_key_line=True):
                 in_task_list = 1
             elif in_task_list == 1:
                 if len(key_line) == 0:
-                    # keys = list(regex.split(line.strip()))
                     key_line = line.rstrip()
                 if line[0] == '-':
                     in_task_list = 2
@@ -50,10 +47,7 @@ def get_running_task(with_key_line=True):
                 if len(line) < 2 or line[1] == ' ':
                     in_task_list = 0
                     continue
-                # content = regex.split(line.strip())
-                # if content[0][-1] == 'R':
-                #     running_tasks[cur_cpu].append(content)
-                if line[1] == 'R':
+                if line[1] == state:
                     running_tasks[cur_cpu].append(line.rstrip())
         if with_key_line:
             return running_tasks, key_line
@@ -66,24 +60,28 @@ def monitor_loadavg_param(interval=1.0):
         time.sleep(interval)
 
 
-def print_running_task():
-    running_tasks, key_line = get_running_task(with_key_line=True)
+def print_running_task(state='R'):
+    running_tasks, key_line = get_running_task(state, with_key_line=True)
+    print(key_line)
     for cpu_id, tasks in running_tasks.items():
         if len(tasks) == 0:
             continue
         print('='*120)
         print(f'cpu#{cpu_id}')
-        print(key_line)
         print('-'*120)
         for task in tasks:
             print(task)
         print(flush=True)
 
 
+def print_usage():
+    print('usage:', sys.argv[0], 'loadavg_param | task_list [state]', file=sys.stderr)
+    sys.exit(1)
+
+
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print('usage:', sys.argv[0], 'loadavg_param | task_list', file=sys.stderr)
-        sys.exit(1)
+        print_usage()
     if sys.argv[1] == 'loadavg_param':
         if len(sys.argv) == 3:
             interval = float(sys.argv[2])
@@ -91,7 +89,10 @@ if __name__ == '__main__':
         else:
             monitor_loadavg_param()
     elif sys.argv[1] == 'task_list':
-        print_running_task()
+        if len(sys.argv) >= 3:
+            assert len(sys.argv[2]) == 1, "state should be only one character"
+            print_running_task(sys.argv[2])
+        else:
+            print_running_task()
     else:
-        print('usage:', sys.argv[0], 'loadavg_param | task_list', file=sys.stderr)
-        sys.exit(1)
+        print_usage()
