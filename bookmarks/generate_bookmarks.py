@@ -111,7 +111,7 @@ def render_as_html(folder: Folder, path='') -> str:
     def _db(b: Bookmark) -> str:
         if path and not b.path.startswith(path):
             return ''
-        return f'<a href="{b.uri}">{b.title}</a>'
+        return f'<a href="{b.uri}" referrerpolicy="no-referrer" target="_blank">{b.title}</a>'
 
     return f"""
 <html lang="zh-CN">
