@@ -12,6 +12,7 @@ import lz4.block
 class Bookmark:
     title: str
     uri: str
+    parent: str
     modified: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.now)
     created: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.now)
     icon_uri: str = 'favicon.ico'
@@ -19,16 +20,28 @@ class Bookmark:
     def __post_init__(self):
         urllib.parse.urlparse(self.icon_uri)
 
+    @property
+    def path(self):
+        return f'{self.parent}.{self.title}'
+
 
 @dataclasses.dataclass
 class Folder:
     title: str
+    parent: str
     modified: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.now)
     created: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.now)
     children: typing.List[typing.Union[Folder, Bookmark]] = dataclasses.field(default_factory=list)
 
     def add(self, child: typing.Union[Folder, Bookmark]):
         self.children.append(child)
+
+    @property
+    def path(self):
+        if self.parent:
+            return f'{self.parent}.{self.title}'
+        else:
+            return self.title
 
 
 def load_firefox(filepath, skip_empty=True):
@@ -46,7 +59,7 @@ def load_firefox(filepath, skip_empty=True):
         if d['type'] == 'text/x-moz-place-container':
             if skip_empty and len(d.get('children', [])) <= 0:
                 return c
-            folder = Folder(d['title'], _t(d['lastModified']), _t(d['dateAdded']))
+            folder = Folder(d['title'], c.path if c is not None else '', _t(d['lastModified']), _t(d['dateAdded']))
             _rec(d['children'], folder)
             if skip_empty and len(folder.children) <= 0:
                 return c
@@ -63,6 +76,7 @@ def load_firefox(filepath, skip_empty=True):
             c.add(Bookmark(
                 d['title'],
                 d['uri'],
+                c.path,
                 _t(d['lastModified']),
                 _t(d['dateAdded']),
                 d.get('iconuri', '')
@@ -78,6 +92,39 @@ def load_firefox(filepath, skip_empty=True):
     return ret
 
 
+def render_as_html(folder: Folder, path='') -> str:
+
+    def _rec(x: typing.Union[Folder, Bookmark]) -> str:
+        if isinstance(x, Folder):
+            return _df(x)
+        else:
+            return _db(x)
+
+    def _df(f: Folder) -> str:
+        children_html = list(filter(None, [_rec(child) for child in f.children]))
+        if not path or (path and f.path.startswith(path)) or len(children_html) > 0:
+            if len(children_html) == 1:
+                return children_html[0]
+            return f'<p>{f.title}:</p><ol><li>{"</li><li>".join(children_html)}</li></ol>'
+        return ''
+
+    def _db(b: Bookmark) -> str:
+        if path and not b.path.startswith(path):
+            return ''
+        return f'<a href="{b.uri}">{b.title}</a>'
+
+    return f"""
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Bookmarks</title>
+    </head>
+    <body>
+        {_rec(folder)}
+    </body>
+</html>"""
+
+
 if __name__ == "__main__":
-    folder = load_firefox('bookmarks.jsonlz4')
-    pprint.pprint(dataclasses.asdict(folder))
+    with open('bookmarks.html', 'w+') as f:
+        f.write(render_as_html(load_firefox('bookmarks.jsonlz4'), 'toolbar.Blog'))
