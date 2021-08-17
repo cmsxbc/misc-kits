@@ -5,7 +5,9 @@ import json
 import dataclasses
 import pprint
 import datetime
+import base64
 import lz4.block
+import requests
 
 
 @dataclasses.dataclass
@@ -15,10 +17,18 @@ class Bookmark:
     parent: str
     modified: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.now)
     created: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.now)
-    icon_uri: str = 'favicon.ico'
+    icon_uri: str = '/favicon.ico'
 
     def __post_init__(self):
-        urllib.parse.urlparse(self.icon_uri)
+        if not self.icon_uri:
+            self.icon_uri = '/favicon.ico'
+        res = urllib.parse.urlparse(self.icon_uri)
+        if not res.netloc:
+            if res.path.startswith('/'):
+                base_res = urllib.parse.urlparse(self.uri)
+                self.icon_uri = urllib.parse.urlunparse((base_res.scheme, base_res.netloc, res.path, res.params, res.query, res.fragment))
+            else:
+                self.icon_uri = urllib.parse.urljoin(self.uri, self.icon_uri)
 
     @property
     def path(self):
@@ -92,6 +102,21 @@ def load_firefox(filepath, skip_empty=True):
     return ret
 
 
+def icon_uri2data(icon_uri):
+    if icon_uri.startswith('data:image/'):
+        return icon_uri
+    try:
+        resp = requests.get(icon_uri, timeout=10)
+    except requests.exceptions.RequestException as e:
+        print(f'[warn] catch exception: {e}')
+        return ''
+    if resp.status_code != 200:
+        return ''
+    img_type = resp.headers.get('Content-Type')
+    data = base64.b64encode(resp.content).decode()
+    return f'data:{img_type};base64,{data}'
+
+
 def render_as_html(folder: Folder, path='') -> str:
 
     def _rec(x: typing.Union[Folder, Bookmark]) -> str:
@@ -109,9 +134,13 @@ def render_as_html(folder: Folder, path='') -> str:
         return ''
 
     def _db(b: Bookmark) -> str:
+        print(b.icon_uri)
         if path and not b.path.startswith(path):
             return ''
-        return f'<a href="{b.uri}" referrerpolicy="no-referrer" target="_blank">{b.title}</a>'
+        icon = icon_uri2data(b.icon_uri)
+        print(b.uri, icon)
+        icon_html = '' if not icon else f'<img src="{icon}" width="32" height="32" />'
+        return f'<a href="{b.uri}" referrerpolicy="no-referrer" target="_blank">{icon_html}{b.title}</a>'
 
     return f"""
 <html lang="zh-CN">
