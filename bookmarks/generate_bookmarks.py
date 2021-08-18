@@ -5,8 +5,8 @@ import json
 import dataclasses
 import datetime
 import base64
+import hashlib
 import lz4.block
-import requests
 import aiohttp
 import asyncio
 
@@ -57,9 +57,8 @@ class Folder:
 
 
 def load_firefox(filepath, skip_empty=True):
-
     def _t(timestamp):
-        return datetime.datetime.fromtimestamp(timestamp/1e6)
+        return datetime.datetime.fromtimestamp(timestamp / 1e6)
 
     def _rec(d: typing.Union[list, dict], c: typing.Optional[Folder] = None) -> Folder:
         if isinstance(d, list):
@@ -104,21 +103,6 @@ def load_firefox(filepath, skip_empty=True):
     return ret
 
 
-def icon_uri2data(icon_uri):
-    if icon_uri.startswith('data:image/'):
-        return icon_uri
-    try:
-        resp = requests.get(icon_uri, timeout=10)
-    except requests.exceptions.RequestException as e:
-        print(f'[warn] catch exception: {e}')
-        return ''
-    if resp.status_code != 200:
-        return ''
-    img_type = resp.headers.get('Content-Type')
-    data = base64.b64encode(resp.content).decode()
-    return f'data:{img_type};base64,{data}'
-
-
 async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark):
     if b.icon_uri.startswith('data:image/'):
         return
@@ -137,8 +121,22 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark):
         return
 
 
-def render_as_html(folder: Folder, path='') -> str:
+def get_svg_uri(b: Bookmark):
+    xml_lines = [
+        ('<?xml version="1.0" standalone="no"?>'
+         '<svg width="32" height="32" xmlns="http://www.w3.org/2000/svg" version="1.1">')
+    ]
+    values = hashlib.md5(b.icon_uri.encode()).digest() * 2
+    for x in range(4):
+        for y in range(4):
+            color = values[x*4+y:][:3].hex()
+            xml_lines.append(f'<rect width="8" height="8" x="{8*x}" y="{8*y}" fill="#{color}"></rect>')
+    xml_lines.append('</svg>')
+    data = base64.b64encode(''.join(xml_lines).encode()).decode()
+    return f'data:image/svg+xml;base64,{data}'
 
+
+def render_as_html(folder: Folder, path='') -> str:
     def _rec_icon(s: aiohttp.ClientSession, t: typing.List, x: typing.Union[Folder, Bookmark]):
         if isinstance(x, Folder):
             for child in x.children:
@@ -162,7 +160,7 @@ def render_as_html(folder: Folder, path='') -> str:
             return _db(x)
 
     def _df(f: Folder, d=0) -> str:
-        children_html_list = list(filter(None, [_rec(child, d+1) for child in f.children]))
+        children_html_list = list(filter(None, [_rec(child, d + 1) for child in f.children]))
         if not path or (path and f.path.startswith(path)) or len(children_html_list) > 0:
             if len(children_html_list) == 1:
                 return children_html_list[0]
@@ -175,11 +173,10 @@ def render_as_html(folder: Folder, path='') -> str:
     def _db(b: Bookmark) -> str:
         if path and not b.path.startswith(path):
             return ''
-        # icon = icon_uri2data(b.icon_uri)
-        icon = b.icon_uri if b.icon_uri.startswith('data:image/') else ''
+        icon = b.icon_uri if b.icon_uri.startswith('data:image/') else get_svg_uri(b)
         print(b.uri, b.icon_uri)
         icon_html = '' if not icon else f'<img src="{icon}" width="32" height="32" />'
-        return f'<a href="{b.uri}" referrerpolicy="no-referrer" target="_blank">{icon_html}{b.title}</a>'
+        return f'<div class="bookmark"><a href="{b.uri}" referrerpolicy="no-referrer" target="_blank">{icon_html}<p>{b.title}</p></a></div>'
 
     asyncio.run(get_all_icons())
 
@@ -193,11 +190,18 @@ def render_as_html(folder: Folder, path='') -> str:
             counter-reset: section;
             list-style-type: none;
         }}
-        li::before {{
+        .bookmark::before {{
             counter-increment: section;
-            content: counters(section, ".") ". ";
+            content: counters(section, ".", decimal-leading-zero) ". ";
             padding-right: .5rem;
-            float: left;
+            display:inline-block;
+        }}
+        .bookmark img,p {{
+            display: inline-block;
+            vertical-align: middle;
+        }}
+        .bookmark p {{
+            text-indent: .6rem;
         }}
         </style>
     </head>
