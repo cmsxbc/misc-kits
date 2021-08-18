@@ -3,11 +3,12 @@ import typing
 import urllib.parse
 import json
 import dataclasses
-import pprint
 import datetime
 import base64
 import lz4.block
 import requests
+import aiohttp
+import asyncio
 
 
 @dataclasses.dataclass
@@ -26,7 +27,8 @@ class Bookmark:
         if not res.netloc:
             if res.path.startswith('/'):
                 base_res = urllib.parse.urlparse(self.uri)
-                self.icon_uri = urllib.parse.urlunparse((base_res.scheme, base_res.netloc, res.path, res.params, res.query, res.fragment))
+                self.icon_uri = urllib.parse.urlunparse((
+                    base_res.scheme, base_res.netloc, res.path, res.params, res.query, res.fragment))
             else:
                 self.icon_uri = urllib.parse.urljoin(self.uri, self.icon_uri)
 
@@ -117,36 +119,87 @@ def icon_uri2data(icon_uri):
     return f'data:{img_type};base64,{data}'
 
 
+async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark):
+    if b.icon_uri.startswith('data:image/'):
+        return
+    print(f'[trace] aio get: {b.icon_uri}')
+    try:
+        async with session.get(b.icon_uri) as resp:
+            data = await resp.read()
+            if resp.status != 200:
+                return
+            img_type = resp.headers.get('Content-Type')
+            data = base64.b64encode(data).decode()
+            print(f'[trace] aio get done: {b.icon_uri}')
+            b.icon_uri = f'data:{img_type};base64,{data}'
+    except (aiohttp.ClientOSError, aiohttp.ServerTimeoutError, asyncio.exceptions.TimeoutError) as e:
+        print(f'[warn] while fetch {b.icon_uri} catch exception: {e}')
+        return
+
+
 def render_as_html(folder: Folder, path='') -> str:
 
-    def _rec(x: typing.Union[Folder, Bookmark]) -> str:
+    def _rec_icon(s: aiohttp.ClientSession, t: typing.List, x: typing.Union[Folder, Bookmark]):
         if isinstance(x, Folder):
-            return _df(x)
+            for child in x.children:
+                _rec_icon(s, t, child)
+            return
+        elif path and not x.path.startswith(path):
+            return
+        t.append(asyncio.ensure_future(bookmark_icon_uri2data(s, x)))
+
+    async def get_all_icons():
+        timeout = aiohttp.ClientTimeout(60, 10, 25)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            tasks = []
+            _rec_icon(session, tasks, folder)
+            await asyncio.gather(*tasks)
+
+    def _rec(x: typing.Union[Folder, Bookmark], d=0) -> str:
+        if isinstance(x, Folder):
+            return _df(x, d)
         else:
             return _db(x)
 
-    def _df(f: Folder) -> str:
-        children_html = list(filter(None, [_rec(child) for child in f.children]))
-        if not path or (path and f.path.startswith(path)) or len(children_html) > 0:
-            if len(children_html) == 1:
-                return children_html[0]
-            return f'<p>{f.title}:</p><ol><li>{"</li><li>".join(children_html)}</li></ol>'
+    def _df(f: Folder, d=0) -> str:
+        children_html_list = list(filter(None, [_rec(child, d+1) for child in f.children]))
+        if not path or (path and f.path.startswith(path)) or len(children_html_list) > 0:
+            if len(children_html_list) == 1:
+                return children_html_list[0]
+            indent1 = ' ' * 4 * d * 2
+            indent2 = ' ' * 4 * (d * 2 + 1)
+            children_html = f"</li>\n{indent2}<li>".join(children_html_list)
+            return f'<p>{f.title}:</p>\n{indent1}<ol><li>{children_html}</li>\n{indent1}</ol>'
         return ''
 
     def _db(b: Bookmark) -> str:
-        print(b.icon_uri)
         if path and not b.path.startswith(path):
             return ''
-        icon = icon_uri2data(b.icon_uri)
-        print(b.uri, icon)
+        # icon = icon_uri2data(b.icon_uri)
+        icon = b.icon_uri if b.icon_uri.startswith('data:image/') else ''
+        print(b.uri, b.icon_uri)
         icon_html = '' if not icon else f'<img src="{icon}" width="32" height="32" />'
         return f'<a href="{b.uri}" referrerpolicy="no-referrer" target="_blank">{icon_html}{b.title}</a>'
+
+    asyncio.run(get_all_icons())
 
     return f"""
 <html lang="zh-CN">
     <head>
         <meta charset="UTF-8" />
         <title>Bookmarks</title>
+        <style>
+        ol {{
+            counter-reset: section;
+            list-style-type: none;
+        }}
+        li::before {{
+            counter-increment: section;
+            content: counters(section, ".") ". ";
+            padding-right: .5rem;
+            float: left;
+        }}
+        </style>
     </head>
     <body>
         {_rec(folder)}
@@ -156,4 +209,7 @@ def render_as_html(folder: Folder, path='') -> str:
 
 if __name__ == "__main__":
     with open('bookmarks.html', 'w+') as f:
-        f.write(render_as_html(load_firefox('bookmarks.jsonlz4'), 'toolbar.Blog'))
+        f.write(render_as_html(
+            load_firefox('bookmarks.jsonlz4'),
+            'toolbar.Blog'
+        ))
