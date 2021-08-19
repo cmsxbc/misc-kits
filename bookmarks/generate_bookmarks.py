@@ -1,4 +1,7 @@
 from __future__ import annotations
+import sys
+import os.path
+import argparse
 import typing
 import urllib.parse
 import json
@@ -136,7 +139,7 @@ def get_svg_uri(b: Bookmark):
     return f'data:image/svg+xml;base64,{data}'
 
 
-def render_as_html(folder: Folder, path='') -> str:
+def render_as_html(folder: Folder, path='', include_icon=True) -> str:
     def _rec_icon(s: aiohttp.ClientSession, t: typing.List, x: typing.Union[Folder, Bookmark]):
         if isinstance(x, Folder):
             for child in x.children:
@@ -173,12 +176,16 @@ def render_as_html(folder: Folder, path='') -> str:
     def _db(b: Bookmark) -> str:
         if path and not b.path.startswith(path):
             return ''
-        icon = b.icon_uri if b.icon_uri.startswith('data:image/') else get_svg_uri(b)
-        print(b.uri, b.icon_uri)
+        if include_icon:
+            icon = b.icon_uri if b.icon_uri.startswith('data:image/') else get_svg_uri(b)
+        else:
+            icon = ''
+        # print(b.uri, b.icon_uri)
         icon_html = '' if not icon else f'<img src="{icon}" width="32" height="32" />'
         return f'<div class="bookmark"><a href="{b.uri}" referrerpolicy="no-referrer" target="_blank">{icon_html}<p>{b.title}</p></a></div>'
 
-    asyncio.run(get_all_icons())
+    if include_icon:
+        asyncio.run(get_all_icons())
 
     return f"""
 <html lang="zh-CN">
@@ -211,9 +218,57 @@ def render_as_html(folder: Folder, path='') -> str:
 </html>"""
 
 
+def get_latest_firefox() -> typing.Optional[str]:
+    firefox_dir = os.path.expanduser('~/.mozilla/firefox/')
+    if not os.path.exists(firefox_dir):
+        print('[error] it seems that no firefox data exist!', file=sys.stderr)
+        return ''
+    timestamp = 0
+    candidate = ''
+    for sub_path in os.listdir(firefox_dir):
+        if not sub_path.endswith('.default-release'):
+            continue
+        bookmark_dir_path = os.path.join(firefox_dir, sub_path, 'bookmarkbackups')
+        if not os.path.exists(bookmark_dir_path):
+            continue
+        for backup_path in os.listdir(bookmark_dir_path):
+            backup_path = os.path.join(bookmark_dir_path, backup_path)
+            f_stat = os.stat(backup_path)
+            if f_stat.st_mtime > timestamp:
+                timestamp = f_stat.st_mtime
+                candidate = backup_path
+
+    return candidate
+
+
+def main():
+    parser = argparse.ArgumentParser(description="render firefox bookmarks as html", add_help=True)
+    parser.add_argument('-i', dest='input_path', required=False, default=None)
+    parser.add_argument('output_path')
+    parser.add_argument('-p', '--path-filter', dest='path_filter', default='')
+    parser.add_argument('--skip-empty', dest='skip_empty', action='store_true')
+    parser.add_argument('--no-icon', dest='include_icon', action='store_false')
+
+    args = parser.parse_args()
+
+    if args.input_path is None:
+        args.input_path = get_latest_firefox()
+        print(f'[warn]use backup: {args.input_path}')
+
+    if not os.path.exists(args.input_path):
+        print(f'[error]{args.input_path} does not exist!', file=sys.stderr)
+        sys.exit(1)
+
+    if os.path.exists(args.output_path):
+        print(f'[warn]{args.output_path} exists!', file=sys.stderr)
+        ans = input(f'Do you want to overwrite "{args.output_path}"?[Yy/Nn]')
+        if ans.lower() != 'y':
+            sys.exit(1)
+
+    with open(args.output_path, 'w+') as of:
+        folder = load_firefox(args.input_path, args.skip_empty)
+        of.write(render_as_html(folder, args.path_filter, args.include_icon))
+
+
 if __name__ == "__main__":
-    with open('bookmarks.html', 'w+') as f:
-        f.write(render_as_html(
-            load_firefox('bookmarks.jsonlz4'),
-            'toolbar.Blog'
-        ))
+    main()
