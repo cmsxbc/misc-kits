@@ -59,10 +59,14 @@ class Folder:
             return self.title
 
 
-def load_firefox(filepath, skip_empty=True):
-    def _t(timestamp):
-        return datetime.datetime.fromtimestamp(timestamp / 1e6)
+def t(timestamp):
+    return datetime.datetime.fromtimestamp(timestamp / 1e6)
 
+
+def general_builder(root: typing.Dict, folder_type, bookmark_type, name_key: str, uri_key: str,
+                    created_key='', modified_key='', icon_key='',
+                    type_key='type', children_key='children',
+                    skip_empty=True, skip_func: typing.Callable[[typing.Dict], bool] = lambda d: True):
     def _rec(d: typing.Union[list, dict], c: typing.Optional[Folder] = None) -> Folder:
         if isinstance(d, list):
             assert isinstance(c, Folder)
@@ -70,11 +74,19 @@ def load_firefox(filepath, skip_empty=True):
                 _rec(child, c)
             return c
         assert isinstance(d, dict), f"Unsupported type {type(d)} of {d}"
-        if d['type'] == 'text/x-moz-place-container':
-            if skip_empty and len(d.get('children', [])) <= 0:
+        if skip_func(d):
+            print(f"[warn] skip {d}")
+            return c
+        optional_fields = {}
+        if modified_key:
+            optional_fields['modified'] = t(d[modified_key])
+        if created_key:
+            optional_fields['created'] = t(d[created_key])
+        if d[type_key] == folder_type:
+            if skip_empty and len(d.get(children_key, [])) <= 0:
                 return c
-            folder = Folder(d['title'], c.path if c is not None else '', _t(d['lastModified']), _t(d['dateAdded']))
-            _rec(d['children'], folder)
+            folder = Folder(d[name_key], c.path if c is not None else '', **optional_fields)
+            _rec(d[children_key], folder)
             if skip_empty and len(folder.children) <= 0:
                 return c
             if c is not None:
@@ -82,28 +94,46 @@ def load_firefox(filepath, skip_empty=True):
                 return c
             else:
                 return folder
-        elif d['type'] == 'text/x-moz-place':
-            if d.get('iconuri', '').startswith('fake-favicon-uri:'):
-                # assume this is all firefox special.
-                print(f"[warn] skip {d}")
-                return c
-            c.add(Bookmark(
-                d['title'],
-                d['uri'],
-                c.path,
-                _t(d['lastModified']),
-                _t(d['dateAdded']),
-                d.get('iconuri', '')
-            ))
+        elif d[type_key] == bookmark_type:
+            if icon_key:
+                optional_fields['icon_uri'] = d.get(icon_key)
+            c.add(Bookmark(d[name_key], d[uri_key], c.path, **optional_fields))
             return c
         assert False, f"Unknown bookmark type: {d['type']}"
 
+    return _rec(root)
+
+
+def load_firefox(filepath, skip_empty=True):
     with open(filepath, 'rb') as f:
         assert f.read(8) == b'mozLz40\x00'
         data = json.loads(lz4.block.decompress(f.read()))
-        ret = _rec(data)
+    return general_builder(
+        data,
+        folder_type='text/x-moz-place-container',
+        bookmark_type='text/x-moz-place',
+        name_key='title',
+        uri_key='uri',
+        created_key='dateAdded',
+        modified_key='lastModified',
+        icon_key='iconuri',
+        skip_empty=skip_empty,
+        skip_func=lambda x: x.get('iconuri', '').startswith('fake-favicon-uri:')
+    )
 
-    return ret
+
+def load_chrome(filepath, skip_empty=True):
+    with open(filepath, 'r') as f:
+        data = json.load(f)
+    return general_builder(
+        {'children': list(data['roots'].values()), 'name': 'root', 'type': 'folder'},
+        folder_type='folder',
+        bookmark_type='url',
+        name_key='name',
+        uri_key='url',
+        skip_empty=skip_empty,
+        skip_func=lambda x: x.get('url', '').startswith('chrome://')
+    )
 
 
 async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark):
@@ -241,10 +271,37 @@ def get_latest_firefox() -> typing.Optional[str]:
     return candidate
 
 
+def get_chromium(name='chromium'):
+    bookmark_path = os.path.expanduser(f'~/.config/{name}/Default/Bookmarks')
+    if not os.path.exists(bookmark_path):
+        print(f'[error] it seems that no {name}(based on chromium) exist!')
+        return ''
+    return bookmark_path
+
+
+def get_chrome():
+    return get_chromium('google-chrome')
+
+
 def main():
+    browser_mapping = {
+        'firefox': {
+            'loader': load_firefox,
+            'get_default': get_latest_firefox
+        },
+        'chrome': {
+            'loader': load_chrome,
+            'get_default': get_chrome
+        },
+        'chromium': {
+            'loader': load_chrome,
+            'get_default': get_chromium
+        }
+    }
     parser = argparse.ArgumentParser(description="render firefox bookmarks as html", add_help=True)
-    parser.add_argument('-i', dest='input_path', required=False, default=None)
+    parser.add_argument('-b', '--browser', dest='browser', required=True, choices=list(browser_mapping.keys()))
     parser.add_argument('output_path')
+    parser.add_argument('-i', dest='input_path', required=False, default=None)
     parser.add_argument('-p', '--path-filter', dest='path_filter', default='')
     parser.add_argument('--skip-empty', dest='skip_empty', action='store_true')
     parser.add_argument('--no-icon', dest='include_icon', action='store_false')
@@ -252,7 +309,7 @@ def main():
     args = parser.parse_args()
 
     if args.input_path is None:
-        args.input_path = get_latest_firefox()
+        args.input_path = browser_mapping[args.browser]['get_default']()
         print(f'[warn]use backup: {args.input_path}')
 
     if not os.path.exists(args.input_path):
@@ -266,7 +323,7 @@ def main():
             sys.exit(1)
 
     with open(args.output_path, 'w+') as of:
-        folder = load_firefox(args.input_path, args.skip_empty)
+        folder = browser_mapping[args.browser]['loader'](args.input_path, args.skip_empty)
         of.write(render_as_html(folder, args.path_filter, args.include_icon))
 
 
