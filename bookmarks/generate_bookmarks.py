@@ -9,9 +9,14 @@ import dataclasses
 import datetime
 import base64
 import hashlib
+import logging
 import lz4.block
 import aiohttp
 import asyncio
+
+
+logging.basicConfig()
+logger = logging.getLogger('bookmarks')
 
 
 @dataclasses.dataclass
@@ -66,7 +71,7 @@ def t(timestamp):
 def general_builder(root: typing.Dict, folder_type, bookmark_type, name_key: str, uri_key: str,
                     created_key='', modified_key='', icon_key='',
                     type_key='type', children_key='children',
-                    skip_empty=True, skip_func: typing.Callable[[typing.Dict], bool] = lambda d: True):
+                    skip_empty=False, skip_func: typing.Callable[[typing.Dict], bool] = lambda d: True):
     def _rec(d: typing.Union[list, dict], c: typing.Optional[Folder] = None) -> Folder:
         if isinstance(d, list):
             assert isinstance(c, Folder)
@@ -75,7 +80,7 @@ def general_builder(root: typing.Dict, folder_type, bookmark_type, name_key: str
             return c
         assert isinstance(d, dict), f"Unsupported type {type(d)} of {d}"
         if skip_func(d):
-            print(f"[warn] skip {d}")
+            logger.warning('skip %s', d)
             return c
         optional_fields = {}
         if modified_key:
@@ -84,6 +89,7 @@ def general_builder(root: typing.Dict, folder_type, bookmark_type, name_key: str
             optional_fields['created'] = t(d[created_key])
         if d[type_key] == folder_type:
             if skip_empty and len(d.get(children_key, [])) <= 0:
+                logger.warning('skip empty: %s', d)
                 return c
             folder = Folder(d[name_key], c.path if c is not None else '', **optional_fields)
             _rec(d[children_key], folder)
@@ -104,7 +110,7 @@ def general_builder(root: typing.Dict, folder_type, bookmark_type, name_key: str
     return _rec(root)
 
 
-def load_firefox(filepath, skip_empty=True):
+def load_firefox(filepath, skip_empty=False):
     with open(filepath, 'rb') as f:
         assert f.read(8) == b'mozLz40\x00'
         data = json.loads(lz4.block.decompress(f.read()))
@@ -122,7 +128,7 @@ def load_firefox(filepath, skip_empty=True):
     )
 
 
-def load_chrome(filepath, skip_empty=True):
+def load_chrome(filepath, skip_empty=False):
     with open(filepath, 'r') as f:
         data = json.load(f)
     return general_builder(
@@ -139,7 +145,7 @@ def load_chrome(filepath, skip_empty=True):
 async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark):
     if b.icon_uri.startswith('data:image/'):
         return
-    print(f'[trace] aio get: {b.icon_uri}')
+    logger.debug('aio get: %s', b.icon_uri)
     try:
         async with session.get(b.icon_uri) as resp:
             data = await resp.read()
@@ -147,10 +153,10 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark):
                 return
             img_type = resp.headers.get('Content-Type')
             data = base64.b64encode(data).decode()
-            print(f'[trace] aio get done: {b.icon_uri}')
+            logger.debug('aio get done: %s', b.icon_uri)
             b.icon_uri = f'data:{img_type};base64,{data}'
     except (aiohttp.ClientOSError, aiohttp.ServerTimeoutError, asyncio.exceptions.TimeoutError) as e:
-        print(f'[warn] while fetch {b.icon_uri} catch exception: {e}')
+        logger.warning('while fetch %s catch exception: %s', b.icon_uri, e)
         return
 
 
@@ -239,9 +245,13 @@ def render_as_html(folder: Folder, path='', include_icon=True) -> str:
             icon = b.icon_uri if b.icon_uri.startswith('data:image/') else get_svg_uri(b)
         else:
             icon = ''
-        # print(b.uri, b.icon_uri)
         icon_html = '' if not icon else f'<img src="{icon}" width="32" height="32" />'
-        return f'<div class="bookmark"><a href="{_attr_url(b.uri)}" referrerpolicy="no-referrer" target="_blank">{icon_html}<p>{_element(b.title)}</p></a></div>'
+        return (
+            '<div class="bookmark">'
+            f'<a href="{_attr_url(b.uri)}" referrerpolicy="no-referrer" target="_blank">'
+            f'{icon_html}<p>{_element(b.title)}</p>'
+            '</a></div>'
+        )
 
     if include_icon:
         asyncio.run(get_all_icons())
@@ -280,7 +290,7 @@ def render_as_html(folder: Folder, path='', include_icon=True) -> str:
 def get_latest_firefox() -> typing.Optional[str]:
     firefox_dir = os.path.expanduser('~/.mozilla/firefox/')
     if not os.path.exists(firefox_dir):
-        print('[error] it seems that no firefox data exist!', file=sys.stderr)
+        logger.error('it seems that no firefox data exist!')
         return ''
     timestamp = 0
     candidate = ''
@@ -303,7 +313,7 @@ def get_latest_firefox() -> typing.Optional[str]:
 def get_chromium(name='chromium'):
     bookmark_path = os.path.expanduser(f'~/.config/{name}/Default/Bookmarks')
     if not os.path.exists(bookmark_path):
-        print(f'[error] it seems that no {name}(based on chromium) exist!')
+        logger.error('it seems that no %s(based on chromium) data exist!', name)
         return ''
     return bookmark_path
 
@@ -327,28 +337,35 @@ def main():
             'get_default': get_chromium
         }
     }
-    parser = argparse.ArgumentParser(description="render firefox bookmarks as html", add_help=True)
+    parser = argparse.ArgumentParser(description="render browser bookmarks as html", add_help=True)
     parser.add_argument('-b', '--browser', dest='browser', required=True, choices=list(browser_mapping.keys()))
-    parser.add_argument('output_path')
-    parser.add_argument('-i', dest='input_path', required=False, default=None)
-    parser.add_argument('-p', '--path-filter', dest='path_filter', default='')
-    parser.add_argument('--skip-empty', dest='skip_empty', action='store_true')
-    parser.add_argument('--no-icon', dest='include_icon', action='store_false')
+    parser.add_argument('output_path', help='/path/for/the/generated/html/to/be/stored')
+    parser.add_argument('-i', dest='input_path', required=False, default=None,
+                        help='/path/to/bookmarks/file, if not supplied, the default (across the browser) will be used.')
+    parser.add_argument('-p', '--path-filter', dest='path_filter', default='',
+                        help='filter bookmarks by path, use "." to split parent and child')
+    parser.add_argument('--skip-empty', dest='skip_empty', action='store_true',
+                        help='skip empty folder')
+    parser.add_argument('--no-icon', dest='include_icon', action='store_false',
+                        help='do not include icons in generated html')
+    parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
+    parser.add_argument('-v', '--verbose', action='count', default=0)
 
     args = parser.parse_args()
 
+    logger.setLevel(logging.ERROR - 10 * args.verbose)
+
     if args.input_path is None:
         args.input_path = browser_mapping[args.browser]['get_default']()
-        print(f'[warn]use backup: {args.input_path}')
+        logger.info('use default of %s: %s', args.browser, args.input_path)
 
     if not os.path.exists(args.input_path):
-        print(f'[error]{args.input_path} does not exist!', file=sys.stderr)
+        logger.error('%s does not exist!', args.input_path)
         sys.exit(1)
 
     if os.path.exists(args.output_path):
-        print(f'[warn]{args.output_path} exists!', file=sys.stderr)
-        ans = input(f'Do you want to overwrite "{args.output_path}"?[Yy/Nn]')
-        if ans.lower() != 'y':
+        logger.warning('%s exists!', args.output_path)
+        if not args.yes and input(f'Do you want to overwrite "{args.output_path}"?[Yy/Nn]').lower() != 'y':
             sys.exit(1)
 
     with open(args.output_path, 'w+') as of:
