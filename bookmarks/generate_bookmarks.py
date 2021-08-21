@@ -153,10 +153,16 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark):
                 return
             img_type = resp.headers.get('Content-Type')
             data = base64.b64encode(data).decode()
+            if not data:
+                logger.warning('aio get finished: %s, but there is no data', b.icon_uri)
+                return ''
             logger.debug('aio get done: %s', b.icon_uri)
             b.icon_uri = f'data:{img_type};base64,{data}'
     except (aiohttp.ClientOSError, aiohttp.ServerTimeoutError, asyncio.exceptions.TimeoutError) as e:
         logger.warning('while fetch %s catch exception: %s', b.icon_uri, e)
+        return
+    except Exception as e:
+        logger.error('while fetch %s catch exception: %s', b.icon_uri, e)
         return
 
 
