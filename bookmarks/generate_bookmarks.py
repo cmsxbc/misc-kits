@@ -192,6 +192,35 @@ def render_as_html(folder: Folder, path='', include_icon=True) -> str:
         else:
             return _db(x)
 
+    def _attr_url(value):
+        mapping = {
+            '"': '%22',
+            '>': '%3E'
+        }
+        for o, r in mapping.items():
+            value = value.replace(o, r)
+        res = urllib.parse.urlparse(value)
+        validate_schemes = {
+            'https',
+            'http',
+            'ftp',
+        }
+        if res.scheme in validate_schemes:
+            return value
+        return f'https://invalid-schema/{value}'
+
+    def _element(value):
+        mapping = {
+            '<': '&lt;',
+            '>': '&gt;',
+            '&': '&amp;',
+            '"': '&quot;',
+            "'": '&#x27;'
+        }
+        for o, r in mapping.items():
+            value = value.replace(o, r)
+        return value
+
     def _df(f: Folder, d=0) -> str:
         children_html_list = list(filter(None, [_rec(child, d + 1) for child in f.children]))
         if not path or (path and f.path.startswith(path)) or len(children_html_list) > 0:
@@ -200,7 +229,7 @@ def render_as_html(folder: Folder, path='', include_icon=True) -> str:
             indent1 = ' ' * 4 * d * 2
             indent2 = ' ' * 4 * (d * 2 + 1)
             children_html = f"</li>\n{indent2}<li>".join(children_html_list)
-            return f'<p>{f.title}:</p>\n{indent1}<ol><li>{children_html}</li>\n{indent1}</ol>'
+            return f'<p>{_element(f.title)}:</p>\n{indent1}<ol><li>{children_html}</li>\n{indent1}</ol>'
         return ''
 
     def _db(b: Bookmark) -> str:
@@ -212,7 +241,7 @@ def render_as_html(folder: Folder, path='', include_icon=True) -> str:
             icon = ''
         # print(b.uri, b.icon_uri)
         icon_html = '' if not icon else f'<img src="{icon}" width="32" height="32" />'
-        return f'<div class="bookmark"><a href="{b.uri}" referrerpolicy="no-referrer" target="_blank">{icon_html}<p>{b.title}</p></a></div>'
+        return f'<div class="bookmark"><a href="{_attr_url(b.uri)}" referrerpolicy="no-referrer" target="_blank">{icon_html}<p>{_element(b.title)}</p></a></div>'
 
     if include_icon:
         asyncio.run(get_all_icons())
