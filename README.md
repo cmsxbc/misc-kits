@@ -24,3 +24,12 @@ A tool to read bookmarks from browser, and render into html for share as web ser
 ### tax.py
 
 A tool to help calculating tax, to know how much salary will be.
+
+## web
+
+## delete_weibo.js
+
+A script to delete all your weibo.
+
+1. get class suffix from source.
+2. run script in console
