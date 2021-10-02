@@ -3,6 +3,7 @@ from typing import List, Callable, Optional, Dict, Union, TypeVar, Iterable, Tup
 from decimal import Decimal, DefaultContext
 from dataclasses import dataclass, field, InitVar
 from copy import deepcopy, copy
+import argparse
 
 
 _Money = TypeVar('_Money', Tuple[Union[int, Decimal], Union[int, Decimal]], Decimal, int, float, str)
@@ -431,8 +432,10 @@ class Taxpayer:
             tax=self.bonus_tax_rate.calc(bonus)
         )
 
-    def calc_package(self, package: YearlyPackage, additional_free: Money = m('0')) -> YearlyTax:
-        yearly_tax = self.calc_salaries(package, additional_free, tax_klass=YearlyTax)
+    def calc_package(self, package: YearlyPackage, additional_free: Money = m('0'),
+                     force_fund_base: Money = m('inf'),
+                     force_insurance_base: Money = m('inf')) -> YearlyTax:
+        yearly_tax = self.calc_salaries(package, additional_free, force_fund_base, force_insurance_base, tax_klass=YearlyTax)
         total_bonus = package.get_total_bonus()
         min_tax = m('inf')
         min_bonus = m('0')
@@ -450,8 +453,10 @@ class Taxpayer:
                 yearly_tax.add(TaxDetail(bonus, self.salary_tax_rate.calc(yearly_tax.tax_base) - yearly_tax.tax))
         return yearly_tax
 
-    def calc_all_package(self, package: YearlyPackage, additional_free: Money = m('0')) -> Dict[Bonus, YearlyTax]:
-        base_yearly_tax = self.calc_salaries(package, additional_free, tax_klass=YearlyTax)
+    def calc_all_package(self, package: YearlyPackage, additional_free: Money = m('0'),
+                         force_fund_base: Money = m('inf'),
+                         force_insurance_base: Money = m('inf')) -> Dict[Bonus, YearlyTax]:
+        base_yearly_tax = self.calc_salaries(package, additional_free, force_fund_base, force_insurance_base, tax_klass=YearlyTax)
         yearly_taxes = {}
         for as_bonus in package.bonuses:
             yearly_tax = deepcopy(base_yearly_tax)
@@ -465,30 +470,65 @@ class Taxpayer:
         return yearly_taxes
 
 
+class SalaryAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        salaries = []
+        too_many_salaries_error = ValueError(f'too many salaries, you should have at most 12 month salary in 1 year.')
+        for value in values:
+            vs = value.split(':')
+            if len(salaries) > 11:
+                raise too_many_salaries_error
+            if len(vs) == 1:
+                salaries.append(Salary(vs[0]))
+            elif len(vs) == 2:
+                salary = Salary(vs[0])
+                count = int(vs[1])
+                if count > 12 - len(salaries):
+                    raise too_many_salaries_error
+                for _ in range(count):
+                    salaries.append(salary)
+            else:
+                raise ValueError(f'Invalid Salary: {value}, `salary` or `salary:months` is required')
+        setattr(namespace, self.dest, salaries)
+
+
+class DictAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        kw = getattr(namespace, self.dest)
+        key = option_string[2:].replace('-', '_')
+        if key in kw:
+            raise RuntimeError(f'duplicate key: {key}, current option string: {option_string}')
+        kw[key] = values
+        setattr(namespace, self.dest, kw)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="A simple tools to calculate tax")
+    parser.add_argument('salaries', metavar='Salary', nargs='+', action=SalaryAction)
+    parser.add_argument('-b', '--bonus', metavar='Bonus', dest='bonuses', action='append', type=Bonus, default=[])
+    parser.add_argument('-d', '--detail', action='store_true')
+    parser.add_argument('-a', '--all', action='store_true')
+    parser.add_argument('--additional-free', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
+    parser.add_argument('--force-fund-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
+    parser.add_argument('--force-insurance-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
+    args = parser.parse_args()
+    if not args.bonuses:
+        if args.all:
+            raise ValueError('-a/--all only usable in calcuate package')
+        Taxpayer().calc_salaries(args.salaries, **args.calc_args).pretty(include_detail=args.detail)
+    else:
+        yp = YearlyPackage.from_list(args.salaries, args.bonuses)
+        if not args.all:
+            Taxpayer().calc_package(yp, **args.calc_args).pretty(include_detail=args.detail)
+        else:
+            for bonus, yearly_tax in Taxpayer().calc_all_package(yp, **args.calc_args).items():
+                if not args.detail:
+                    yearly_tax.pretty(lambda *x: print(f'{bonus} as Bonus:', *x))
+                else:
+                    print('='*10, bonus, 'as Bonus', '=' * 10)
+                    yearly_tax.pretty(include_detail=True)
+
+
 if __name__ == '__main__':
-    print('===tax table===')
-    SalaryTaxRate.from_dict(DEFAULT_TAX).pretty()
-    print('===end table===')
-    i = Taxpayer()
-    # salaries = [m(10_000)] * 12
-    # salaries = [m(10_000)] * 2 + [m(12_000)] + [m(12_000) * m('1.3')] * 9
-    # tax = i.calc_salaries(salaries)
-    # tax.pretty(include_detail=True)
-    #
-    # tax = i.calc_salaries(YearlyPackage.from_list(salaries))
-    # tax.pretty(include_detail=True)
+    main()
 
-    tax = i.calc_salaries(YearlyPackage.from_config([
-        (m(12_000), 2),
-        (m(13_200), 1),
-        (m(15_000), 9),
-    ]), additional_free=m(1500), force_fund_base=m('12000'), force_insurance_base=m('12000'))
-    tax.pretty(include_detail=True)
-
-    # i.calc_bonus(20_000).pretty()
-
-    # i.calc_package(YearlyPackage.from_list([m(15_000)] * 12, [m(20_000), m(24_000)])).pretty(include_detail=True)
-
-    # print('all possible:')
-    # for bonus, yearly_tax in i.calc_all_package(YearlyPackage.from_list([m(5_000)] * 12, [m(96_000), m(24_000)])).items():
-    #     yearly_tax.pretty(lambda x: print(f'{bonus} as Bonus: {x}'))
