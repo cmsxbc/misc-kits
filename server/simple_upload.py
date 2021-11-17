@@ -9,6 +9,118 @@ import argparse
 UPLOAD_FOLDER = './files'
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'mp4', 'mov'}
 
+STYLE = """.hidden {
+            display: none;
+        }
+        .container {
+            font-family: Cascadia Code, Source Code Pro;
+            display: flex;
+            flex-flow: column nowrap;
+            justify-content: center;
+            flex-basis: content;
+            gap: 3vw;
+            max-width: 50%;
+            margin: auto;
+            text-align: center;
+            font-size: 2vw;
+        }
+        .exts {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 1vw;
+        }
+        .ext {
+            height: 3vw;
+            width: 5vw;
+            vertical-align: baseline;
+            border-radius: .8vw;
+            background: #a3d2ff;
+            line-height: 3vw;
+        }
+        input[type=submit] {
+            border: 0;
+            font-family: Cascadia Code, Source Code Pro;
+        }
+        .button {
+            font-size: 1em;
+            width: 5em;
+            border-radius: 0.3em;
+            background-color: #ffa6dc;
+            display: inline-block;
+            padding: 0;
+        }
+        input[type=file] {
+            width: 0;
+            height: 0;
+            opacity: 0;
+        }
+        .preview li {
+            display: flex;
+            justify-content: center;
+            margin: .5em 0;
+            height: 2em;
+        }
+        .preview p {
+            line-height: 2em;
+            height: 2em;
+            order: 0;
+            margin: 0;
+            width: 50%;
+            text-align: left;
+        }
+        .preview p.long {
+            font-size: .4em;
+        }
+        .preview img {
+            width: 2em;
+            height: 2em;
+            order: 1;
+        }
+        @media only screen and (max-width: 1080px) {
+            .container {
+                max-width: 100%;
+                font-size: 5vw;
+            }
+            .ext {
+                height: 8vw;
+                width: 20vw;
+                border-radius: 2vw;
+                line-height: 8vw;
+            }
+        }
+"""
+
+SCRIPT = """const $file_input = document.getElementById('files');
+        const $preview = document.getElementById('preview');
+
+        function isImage(file) {
+            return file.type.startsWith('image');
+        }
+
+        $file_input.addEventListener('change', () => {
+            const list = document.createElement('ol');
+            preview.innerHTML = '';
+            preview.appendChild(list);
+            for (const file of $file_input.files) {
+                const listItem = document.createElement('li');
+                const para = document.createElement('p');
+                para.textContent = file.name;
+                if (file.name.length > 15) {
+                    para.classList.add('long');
+                }
+                listItem.appendChild(para);
+                if(isImage(file)) {
+                    const image = document.createElement('img');
+                    image.src = URL.createObjectURL(file);
+                    listItem.appendChild(image);
+                }
+
+                list.appendChild(listItem);
+            }
+        });
+"""
+
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['SECRET_KEY'] = 'xxxx'
@@ -46,11 +158,19 @@ def upload_file():
             flash('No files part')
             return redirect(request.url)
         files = request.files.getlist('files')
+        if not files:
+            flash('No files part')
+            return redirect(request.url)
+        if len(files) == 1 and files[0].filename == '':
+            flash('No files part')
+            return redirect(request.url)
         uploaded_file_list = f"""
         <ul><li>{'</li><li>'.join([f.filename + '=>' + save_a_file(f) for f in files])}</li></ul>
         """
     else:
         uploaded_file_list = ''
+
+
 
     return f'''
 <!doctype html>
@@ -58,53 +178,7 @@ def upload_file():
 <head>
     <title>Upload new File</title>
     <style>
-        .hidden {{
-            display: none;
-        }}
-        .container {{
-            font-family: Cascadia Code, Source Code Pro;
-            display: flex;
-            flex-flow: column nowrap;
-            justify-content: center;
-            flex-basis: content;
-            gap: 3vw;
-            max-width: 50%;
-            margin: auto;
-            text-align: center;
-            font-size: 2vw;
-        }}
-        .exts {{
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
-            gap: 1vw;
-        }}
-        .ext {{
-            height: 3vw;
-            width: 5vw;
-            vertical-align: baseline;
-            border-radius: .8vw;
-            background: #a3d2ff;
-            line-height: 3vw;
-        }}
-        input {{
-            font-size: 1em;
-        }}
-        input[type=file]::file-selector-button {{
-            font-size: 1em;
-        }}
-        @media only screen and (max-width: 1080px) {{
-            .container {{
-                max-width: 100%;
-                font-size: 5vw;
-            }}
-            .ext {{
-                height: 8vw;
-                width: 20vw;
-                border-radius: 2vw;
-                line-height: 8vw;
-            }}
-        }}
+        {STYLE}
     </style>
 </head>
 <body>
@@ -118,11 +192,21 @@ def upload_file():
         </div>
         <div class="form-container">
             <form method=post enctype=multipart/form-data>
-                <input type=file name=files multiple>
-                <input type=submit value=Upload>
+                <div>
+                    <label for="files" class="button">Choose</label>
+                </div>
+                <input type="file" id="files" name="files" multiple>
+                <div class="preview" id="preview">
+                </div>
+                <div>
+                    <input type="submit" class="button" name="submit"/>
+                </div>
             </form>
         </div>
     </div>
+    <script>
+        {SCRIPT}
+    </script>
     </body>
 </html>'''
 
