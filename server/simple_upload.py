@@ -24,6 +24,25 @@ STYLE = """.hidden {
             text-align: center;
             font-size: 2vw;
         }
+        .uploadeds-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        div.uploadeds {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 1vw 2vw;
+            font-size: .4em;
+            margin-top: 1vw;
+            padding: 1vw 0;
+            border-radius: 1vw;
+            background: #13f824;
+        }
+        div.uploadeds > div {
+            padding: 0 1vw;
+        }
         .exts {
             display: flex;
             flex-wrap: wrap;
@@ -69,6 +88,10 @@ STYLE = """.hidden {
             width: 50%;
             text-align: left;
         }
+        .no-image p {
+            width: 80%;
+            text-align: center;
+        }
         .preview p.long {
             font-size: .4em;
         }
@@ -76,6 +99,9 @@ STYLE = """.hidden {
             width: 2em;
             height: 2em;
             order: 1;
+        }
+        .preview img.placeholder {
+            opacity: 0;
         }
         @media only screen and (max-width: 1080px) {
             .container {
@@ -102,6 +128,13 @@ SCRIPT = """const $file_input = document.getElementById('files');
             const list = document.createElement('ol');
             preview.innerHTML = '';
             preview.appendChild(list);
+            const has_image = Object.values($file_input.files).reduce((p, v) => p || isImage(v), false);
+            if (!has_image) {
+                preview.classList.add('no-image');
+            } else {
+                preview.classList.remove('no-image');
+            }
+
             for (const file of $file_input.files) {
                 const listItem = document.createElement('li');
                 const para = document.createElement('p');
@@ -110,12 +143,15 @@ SCRIPT = """const $file_input = document.getElementById('files');
                     para.classList.add('long');
                 }
                 listItem.appendChild(para);
-                if(isImage(file)) {
-                    const image = document.createElement('img');
+                const image = document.createElement('img');
+                if (isImage(file)) {
                     image.src = URL.createObjectURL(file);
+                } else if (has_image) {
+                    image.classList.add('placeholder')
+                }
+                if (has_image) {
                     listItem.appendChild(image);
                 }
-
                 list.appendChild(listItem);
             }
         });
@@ -165,7 +201,9 @@ def upload_file():
             flash('No files part')
             return redirect(request.url)
         uploaded_file_list = f"""
-        <ul><li>{'</li><li>'.join([f.filename + '=>' + save_a_file(f) for f in files])}</li></ul>
+        <div class="uploadeds">
+            {'</div><div class="uploadeds">'.join([f'<div>{f.filename}</div><div>{save_a_file(f)}</div>' for f in files])}
+        </div>
         """
     else:
         uploaded_file_list = ''
@@ -184,7 +222,7 @@ def upload_file():
 <body>
     <div class="container">
         <h1>Upload New File</h1>
-        <div class="{'' if uploaded_file_list else 'hidden'}">
+        <div class="uploadeds-container {'' if uploaded_file_list else 'hidden'}">
             {uploaded_file_list}
         </div>
         <div class="exts-container">
