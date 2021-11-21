@@ -10,15 +10,22 @@ UPLOAD_FOLDER = './files'
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'mp4', 'mov'}
 
 STYLE = """.hidden {
-            display: none;
+            display: none !important;
+        }
+        body {
+            font-family: Cascadia Code, Source Code Pro;
+        }
+        h1 {
+            margin: 3vh;
+            text-align: center;
+            font-size: 5vh;
         }
         .container {
-            font-family: Cascadia Code, Source Code Pro;
             display: flex;
             flex-flow: column nowrap;
             justify-content: center;
             flex-basis: content;
-            gap: 3vw;
+            gap: 10vh;
             max-width: 50%;
             margin: auto;
             text-align: center;
@@ -43,6 +50,16 @@ STYLE = """.hidden {
         div.uploadeds > div {
             padding: 0 1vw;
         }
+        div.uploadeds > div.saved {
+
+        }
+        div.uploadeds > div.origin {
+            color: #aaaaaa;
+        }
+        div.uploadeds > div + div::before {
+            content: "=>";
+            color: #ffaacc;
+        }
         .exts {
             display: flex;
             flex-wrap: wrap;
@@ -60,6 +77,7 @@ STYLE = """.hidden {
         input[type=submit] {
             border: 0;
             font-family: Cascadia Code, Source Code Pro;
+            -webkit-appearance: none;
         }
         .button {
             font-size: 1em;
@@ -125,6 +143,9 @@ SCRIPT = """const $file_input = document.getElementById('files');
         }
 
         $file_input.addEventListener('change', () => {
+            if ($file_input.files.length <= 0) {
+                return;
+            }
             const list = document.createElement('ol');
             preview.innerHTML = '';
             preview.appendChild(list);
@@ -200,9 +221,13 @@ def upload_file():
         if len(files) == 1 and files[0].filename == '':
             flash('No files part')
             return redirect(request.url)
+        uploaded_file_names = list(map(save_a_file, files))
         uploaded_file_list = f"""
         <div class="uploadeds">
-            {'</div><div class="uploadeds">'.join([f'<div>{f.filename}</div><div>{save_a_file(f)}</div>' for f in files])}
+            {'</div><div class="uploadeds">'.join(
+                f'<div class="origin">{f.filename}</div><div class="saved">{name}</div>' if f.filename != name else f'<div class="saved">{name}</div>'
+                for f, name in zip(files, uploaded_file_names)
+            )}
         </div>
         """
     else:
@@ -214,14 +239,14 @@ def upload_file():
 <!doctype html>
 <html>
 <head>
-    <title>Upload new File</title>
+    <title>Upload New File</title>
     <style>
         {STYLE}
     </style>
 </head>
 <body>
+    <h1>Upload New File</h1>
     <div class="container">
-        <h1>Upload New File</h1>
         <div class="uploadeds-container {'' if uploaded_file_list else 'hidden'}">
             {uploaded_file_list}
         </div>
