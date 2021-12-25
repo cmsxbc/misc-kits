@@ -262,7 +262,7 @@ def upload_file():
                 <div class="preview" id="preview">
                 </div>
                 <div>
-                    <input type="submit" class="button" name="submit"/>
+                    <input type="submit" class="button" name="submit" value="Submit" />
                 </div>
             </form>
         </div>
