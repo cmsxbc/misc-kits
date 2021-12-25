@@ -71,7 +71,7 @@ def t(timestamp):
 def general_builder(root: typing.Dict, folder_type, bookmark_type, name_key: str, uri_key: str,
                     created_key='', modified_key='', icon_key='',
                     type_key='type', children_key='children',
-                    skip_empty=False, skip_func: typing.Callable[[typing.Dict], bool] = lambda d: True):
+                    skip_empty=False, skip_func: typing.Callable[[typing.Dict], bool] = lambda _: True):
     def _rec(d: typing.Union[list, dict], c: typing.Optional[Folder] = None) -> Folder:
         if isinstance(d, list):
             assert isinstance(c, Folder)
@@ -92,7 +92,7 @@ def general_builder(root: typing.Dict, folder_type, bookmark_type, name_key: str
                 logger.warning('skip empty: %s', d)
                 return c
             folder = Folder(d[name_key], c.path if c is not None else '', **optional_fields)
-            _rec(d[children_key], folder)
+            _rec(d.get(children_key, []), folder)
             if skip_empty and len(folder.children) <= 0:
                 return c
             if c is not None:
@@ -142,9 +142,18 @@ def load_chrome(filepath, skip_empty=False):
     )
 
 
-async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark):
+async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, icon_cache_dir: typing.Optional[str]):
     if b.icon_uri.startswith('data:image/'):
         return
+
+    cache_path = ''
+    if icon_cache_dir:
+        cache_path = os.path.join(icon_cache_dir, base64.b32encode(b.icon_uri.encode()).decode())
+        if os.path.exists(cache_path):
+            logger.debug('use cache for %s: %s', b.icon_uri, cache_path)
+            with open(cache_path) as f:
+                b.icon_uri = f.read()
+            return
     logger.debug('aio get: %s', b.icon_uri)
     try:
         async with session.get(b.icon_uri) as resp:
@@ -158,6 +167,9 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark):
                 return ''
             logger.debug('aio get done: %s', b.icon_uri)
             b.icon_uri = f'data:{img_type};base64,{data}'
+            if cache_path:
+                with open(cache_path, 'w+') as f:
+                    f.write(b.icon_uri)
     except (aiohttp.ClientOSError, aiohttp.ServerTimeoutError, asyncio.exceptions.TimeoutError) as e:
         logger.warning('while fetch %s catch exception: %s', b.icon_uri, e)
         return
@@ -181,7 +193,7 @@ def get_svg_uri(b: Bookmark):
     return f'data:image/svg+xml;base64,{data}'
 
 
-def render_as_html(folder: Folder, path='', include_icon=True) -> str:
+def render_as_html(folder: Folder, path='', include_icon=True, icon_cache_dir=None) -> str:
     def _rec_icon(s: aiohttp.ClientSession, t: typing.List, x: typing.Union[Folder, Bookmark]):
         if isinstance(x, Folder):
             for child in x.children:
@@ -189,7 +201,7 @@ def render_as_html(folder: Folder, path='', include_icon=True) -> str:
             return
         elif path and not x.path.startswith(path):
             return
-        t.append(asyncio.ensure_future(bookmark_icon_uri2data(s, x)))
+        t.append(asyncio.ensure_future(bookmark_icon_uri2data(s, x, icon_cache_dir)))
 
     async def get_all_icons():
         timeout = aiohttp.ClientTimeout(60, 10, 25)
@@ -352,8 +364,10 @@ def main():
                         help='filter bookmarks by path, use "." to split parent and child')
     parser.add_argument('--skip-empty', dest='skip_empty', action='store_true',
                         help='skip empty folder')
-    parser.add_argument('--no-icon', dest='include_icon', action='store_false',
+    icon_exclusive_group = parser.add_mutually_exclusive_group()
+    icon_exclusive_group.add_argument('--no-icon', dest='include_icon', action='store_false',
                         help='do not include icons in generated html')
+    icon_exclusive_group.add_argument('--icon-cache', dest='icon_cache_dir', default=None, help='use the cache dir for icons')
     parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
     parser.add_argument('-v', '--verbose', action='count', default=0)
 
@@ -374,9 +388,13 @@ def main():
         if not args.yes and input(f'Do you want to overwrite "{args.output_path}"?[Yy/Nn]').lower() != 'y':
             sys.exit(1)
 
+    if args.icon_cache_dir and not os.path.isdir(args.icon_cache_dir):
+        logger.error('%s is not a directory!', args.icon_cache_dir)
+        sys.exit(1)
+
     with open(args.output_path, 'w+') as of:
         folder = browser_mapping[args.browser]['loader'](args.input_path, args.skip_empty)
-        of.write(render_as_html(folder, args.path_filter, args.include_icon))
+        of.write(render_as_html(folder, args.path_filter, args.include_icon, args.icon_cache_dir))
 
 
 if __name__ == "__main__":
