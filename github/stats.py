@@ -1,6 +1,8 @@
+import typing
 import urllib.request
 import json
 import os
+import datetime
 
 
 GITHUB_API_GRAPHQL = 'https://api.github.com/graphql'
@@ -127,26 +129,87 @@ def get_all_commits():
     return repo_commits
 
 
-def stats(repo_commits):
+def _stat_by_dates(commit_by_dates):
+    yearly_stats = {
+    }
+
+    def _add(s, k, info):
+        if k not in s:
+            s[k] = {
+                'additions': info['additions'],
+                'deletions': info['deletions'],
+                'day_count': 1
+            }
+        else:
+            s[k]['additions'] += info['additions']
+            s[k]['deletions'] += info['deletions']
+            s[k]['day_count'] += 1
+
+    for dt, commit_info in commit_by_dates.items():
+        year = dt.strftime('%Y')
+        month = dt.strftime('%m')
+        _add(yearly_stats, year, commit_info)
+        if 'monthly' not in yearly_stats[year]:
+            yearly_stats[year]['monthly'] = {}
+        _add(yearly_stats[year]['monthly'], month, commit_info)
+
+    def _print(y):
+        data = yearly_stats[y]
+        print(f'{y}: additions={data["additions"]}, deletions={data["deletions"]}, days={data["day_count"]}')
+        for m in sorted(data['monthly'].keys()):
+            m_data = data['monthly'][m]
+            print(f'\t{y}-{m}: additions={m_data["additions"]}, deletions={m_data["deletions"]}, days={m_data["day_count"]}')
+
+    for year in sorted(yearly_stats.keys()):
+        _print(year)
+
+
+def stats(repo_commits, timezone: typing.Optional[datetime.timezone] = None,
+          start_datetime: typing.Optional[datetime.datetime] = None,
+          end_datetime: typing.Optional[datetime.datetime] = None):
     total_additions = 0
     total_deletions = 0
     max_additions = ('', 0)
     max_deletions = ('', 0)
+    max_changes = ('', 0)
+    commit_by_dates = {}
     for repo_key, repo in repo_commits.items():
         for commit in repo['commits']:
             if commit['additions'] > ARTIFACT_LIMIT or commit['deletions'] > ARTIFACT_LIMIT:
                 print('skip', commit['commitUrl'])
                 continue
+            commit_dt = datetime.datetime.strptime(commit['committedDate'], "%Y-%m-%dT%H:%M:%S%z")
+            if timezone:
+                commit_dt = commit_dt.astimezone(timezone)
+            if start_datetime and commit_dt < start_datetime:
+                continue
+            if end_datetime and commit_dt > end_datetime:
+                continue
+
             if commit['additions'] > max_additions[1]:
                 max_additions = (commit['commitUrl'], commit['additions'])
             if commit['deletions'] > max_deletions[1]:
                 max_deletions = (commit['commitUrl'], commit['deletions'])
+            changes = commit['additions'] + commit['deletions']
+            if changes > max_changes[1]:
+                max_changes = (commit['commitUrl'], changes)
 
             total_additions += commit['additions']
             total_deletions += commit['deletions']
 
-    print(f'{max_additions=}, {max_deletions=}')
+            dt_key = commit_dt.date()
+            if dt_key not in commit_by_dates:
+                commit_by_dates[dt_key] = {
+                    'additions': commit['additions'],
+                    'deletions': commit['deletions']
+                }
+            else:
+                commit_by_dates[dt_key]['additions'] += commit['additions']
+                commit_by_dates[dt_key]['deletions'] += commit['deletions']
+
+    print(f'{max_additions=}, {max_deletions=}, {max_changes}')
     print(f'{total_additions=}, {total_deletions=}')
+    _stat_by_dates(commit_by_dates)
 
 
 if __name__ == "__main__":
@@ -154,4 +217,5 @@ if __name__ == "__main__":
     # with open('my-data.json', 'w+') as f:
     #     json.dump(repo_commits, f)
     with open('my-data.json') as f:
-        stats(json.load(f))
+        tz = datetime.timezone(datetime.timedelta(hours=0))
+        stats(json.load(f), tz, datetime.datetime(2021, 1, 1, tzinfo=tz))
