@@ -138,11 +138,13 @@ def _stat_by_dates(commit_by_dates):
             s[k] = {
                 'additions': info['additions'],
                 'deletions': info['deletions'],
-                'day_count': 1
+                'day_count': 1,
+                'count': info['count']
             }
         else:
             s[k]['additions'] += info['additions']
             s[k]['deletions'] += info['deletions']
+            s[k]['count'] += info['count']
             s[k]['day_count'] += 1
 
     for dt, commit_info in commit_by_dates.items():
@@ -155,10 +157,10 @@ def _stat_by_dates(commit_by_dates):
 
     def _print(y):
         data = yearly_stats[y]
-        print(f'{y}: additions={data["additions"]}, deletions={data["deletions"]}, days={data["day_count"]}')
+        print(f'{y}: additions={data["additions"]}, deletions={data["deletions"]}, days={data["day_count"]}, commits={data["count"]}')
         for m in sorted(data['monthly'].keys()):
             m_data = data['monthly'][m]
-            print(f'\t{y}-{m}: additions={m_data["additions"]}, deletions={m_data["deletions"]}, days={m_data["day_count"]}')
+            print(f'\t{y}-{m}: additions={m_data["additions"]}, deletions={m_data["deletions"]}, days={m_data["day_count"]}, commits={m_data["count"]}')
 
     for year in sorted(yearly_stats.keys()):
         _print(year)
@@ -201,13 +203,15 @@ def stats(repo_commits, timezone: typing.Optional[datetime.timezone] = None,
             if dt_key not in commit_by_dates:
                 commit_by_dates[dt_key] = {
                     'additions': commit['additions'],
-                    'deletions': commit['deletions']
+                    'deletions': commit['deletions'],
+                    'count': 1
                 }
             else:
                 commit_by_dates[dt_key]['additions'] += commit['additions']
                 commit_by_dates[dt_key]['deletions'] += commit['deletions']
+                commit_by_dates[dt_key]['count'] += 1
 
-    print(f'{max_additions=}, {max_deletions=}, {max_changes}')
+    print(f'{max_additions=}\n{max_deletions=}\n{max_changes=}')
     print(f'{total_additions=}, {total_deletions=}')
     _stat_by_dates(commit_by_dates)
 
