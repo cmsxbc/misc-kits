@@ -3,6 +3,7 @@ import urllib.request
 import json
 import os
 import datetime
+import functools
 
 
 GITHUB_API_GRAPHQL = 'https://api.github.com/graphql'
@@ -129,31 +130,57 @@ def get_all_commits():
     return repo_commits
 
 
+def container_add(container, k, commit, custom_key=None):
+    if k not in container:
+        container[k] = {
+            'additions': commit['additions'],
+            'deletions': commit['deletions'],
+            'count': commit.get('count', 1)
+        }
+        if custom_key:
+            container[k][custom_key] = 1
+    else:
+        container[k]['additions'] += commit['additions']
+        container[k]['deletions'] += commit['deletions']
+        container[k]['count'] += commit.get('count', 1)
+        if custom_key:
+            container[k][custom_key] += 1
+
+
 def _stat_by_dates(commit_by_dates):
-    yearly_stats = {
-    }
+    yearly_stats = {}
+    week_stats = {}
 
-    def _add(s, k, info):
-        if k not in s:
-            s[k] = {
-                'additions': info['additions'],
-                'deletions': info['deletions'],
-                'day_count': 1,
-                'count': info['count']
-            }
-        else:
-            s[k]['additions'] += info['additions']
-            s[k]['deletions'] += info['deletions']
-            s[k]['count'] += info['count']
-            s[k]['day_count'] += 1
-
-    for dt, commit_info in commit_by_dates.items():
+    _add = functools.partial(container_add, custom_key='day_count')
+    dt: datetime.date
+    one_day = datetime.timedelta(1)
+    max_allow_rest = 8
+    last_dt = None
+    streaks = {r: 0 for r in range(max_allow_rest)}
+    max_streaks = {r: 0 for r in range(max_allow_rest)}
+    longest_rest = 0
+    for dt in sorted(commit_by_dates.keys()):
+        commit_info = commit_by_dates[dt]
+        longest_rest = max(longest_rest, (dt - last_dt).days if last_dt else 0)
+        for r in range(max_allow_rest):
+            if not last_dt:
+                streaks[r] = 1
+            elif dt > last_dt + one_day * (r+1):
+                max_streaks[r] = max(max_streaks[r], streaks[r])
+                streaks[r] = 1
+            else:
+                streaks[r] += 1
         year = dt.strftime('%Y')
         month = dt.strftime('%m')
+        week = dt.strftime('%A')
         _add(yearly_stats, year, commit_info)
+        _add(week_stats, week, commit_info)
         if 'monthly' not in yearly_stats[year]:
             yearly_stats[year]['monthly'] = {}
         _add(yearly_stats[year]['monthly'], month, commit_info)
+        last_dt = dt
+
+    max_streaks = {r: max(max_streaks[r], streaks[r]) for r in range(max_allow_rest)}
 
     def _print(y):
         data = yearly_stats[y]
@@ -165,18 +192,51 @@ def _stat_by_dates(commit_by_dates):
     for year in sorted(yearly_stats.keys()):
         _print(year)
 
+    for week in sorted(week_stats.keys()):
+        print(f'{week}, {week_stats[week]}')
+
+    for r in range(max_allow_rest):
+        print(f'longest streak-{r}:', max_streaks[r])
+    print('longest rest:', longest_rest)
+
+
+def _stat_by_times(commit_by_times):
+    hour_stats = {}
+    for t, commit_info in commit_by_times.items():
+        hour = t.strftime('%H')
+        container_add(hour_stats, hour, commit_info)
+    for hour in sorted(hour_stats.keys()):
+        print(hour, hour_stats[hour])
+
 
 def stats(repo_commits, timezone: typing.Optional[datetime.timezone] = None,
           start_datetime: typing.Optional[datetime.datetime] = None,
           end_datetime: typing.Optional[datetime.datetime] = None):
     total_additions = 0
     total_deletions = 0
-    max_additions = ('', 0)
-    max_deletions = ('', 0)
-    max_changes = ('', 0)
+    max_commits = {
+        'additions': {'additions': 0},
+        'deletions': {'deletions': 0},
+        'changes': {'changes': 0}
+    }
     commit_by_dates = {}
+    commit_by_times = {}
+    by_owner = {}
+
+    _add = container_add
+
     for repo_key, repo in repo_commits.items():
+        if repo['owner'] not in by_owner:
+            by_owner[repo['owner']] = {
+                'repo_count': 1,
+                'count': 0,
+                'additions': 0,
+                'deletions': 0
+            }
+        else:
+            by_owner[repo['owner']]['repo_count'] += 1
         for commit in repo['commits']:
+            commit['changes'] = commit['additions'] + commit['deletions']
             if commit['additions'] > ARTIFACT_LIMIT or commit['deletions'] > ARTIFACT_LIMIT:
                 print('skip', commit['commitUrl'])
                 continue
@@ -188,32 +248,26 @@ def stats(repo_commits, timezone: typing.Optional[datetime.timezone] = None,
             if end_datetime and commit_dt > end_datetime:
                 continue
 
-            if commit['additions'] > max_additions[1]:
-                max_additions = (commit['commitUrl'], commit['additions'])
-            if commit['deletions'] > max_deletions[1]:
-                max_deletions = (commit['commitUrl'], commit['deletions'])
-            changes = commit['additions'] + commit['deletions']
-            if changes > max_changes[1]:
-                max_changes = (commit['commitUrl'], changes)
+            max_commits = {k: max_commits[k] if max_commits[k][k] >= commit[k] else commit for k in max_commits.keys()}
 
             total_additions += commit['additions']
             total_deletions += commit['deletions']
 
-            dt_key = commit_dt.date()
-            if dt_key not in commit_by_dates:
-                commit_by_dates[dt_key] = {
-                    'additions': commit['additions'],
-                    'deletions': commit['deletions'],
-                    'count': 1
-                }
-            else:
-                commit_by_dates[dt_key]['additions'] += commit['additions']
-                commit_by_dates[dt_key]['deletions'] += commit['deletions']
-                commit_by_dates[dt_key]['count'] += 1
+            _add(by_owner, repo['owner'], commit)
 
-    print(f'{max_additions=}\n{max_deletions=}\n{max_changes=}')
+            dt_key = commit_dt.date()
+            dtt_key = commit_dt.time()
+            _add(commit_by_dates, dt_key, commit)
+            _add(commit_by_times, dtt_key, commit)
+
+    for k in max_commits.keys():
+        print(f'max_{k}={max_commits[k][k]}')
     print(f'{total_additions=}, {total_deletions=}')
     _stat_by_dates(commit_by_dates)
+    _stat_by_times(commit_by_times)
+    for owner in sorted(by_owner.keys(), key=lambda x: by_owner[x]['count'], reverse=True):
+        data = by_owner[owner]
+        print(f'{owner}: repos={data["repo_count"]}, commits={data["count"]}, additions={data["additions"]}, deletions={data["deletions"]}')
 
 
 if __name__ == "__main__":
