@@ -10,6 +10,7 @@ import datetime
 import base64
 import hashlib
 import logging
+import collections
 import lz4.block
 import aiohttp
 import asyncio
@@ -27,6 +28,7 @@ class Bookmark:
     modified: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.now)
     created: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.now)
     icon_uri: str = '/favicon.ico'
+    tags: typing.Set[str] = dataclasses.field(default_factory=set)
 
     def __post_init__(self):
         if not self.icon_uri:
@@ -193,7 +195,8 @@ def get_svg_uri(b: Bookmark):
     return f'data:image/svg+xml;base64,{data}'
 
 
-def render_as_html(folder: Folder, path='', include_icon=True, icon_cache_dir=None) -> str:
+def get_all_icons(folder, path='', icon_cache_dir=None):
+
     def _rec_icon(s: aiohttp.ClientSession, t: typing.List, x: typing.Union[Folder, Bookmark]):
         if isinstance(x, Folder):
             for child in x.children:
@@ -203,47 +206,53 @@ def render_as_html(folder: Folder, path='', include_icon=True, icon_cache_dir=No
             return
         t.append(asyncio.ensure_future(bookmark_icon_uri2data(s, x, icon_cache_dir)))
 
-    async def get_all_icons():
+    async def _do():
         timeout = aiohttp.ClientTimeout(60, 10, 25)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             tasks = []
             _rec_icon(session, tasks, folder)
             await asyncio.gather(*tasks)
 
+    asyncio.run(_do())
+
+
+def escape_attr_url(value):
+    mapping = {
+        '"': '%22',
+        '>': '%3E'
+    }
+    for o, r in mapping.items():
+        value = value.replace(o, r)
+    res = urllib.parse.urlparse(value)
+    validate_schemes = {
+        'https',
+        'http',
+        'ftp',
+    }
+    if res.scheme in validate_schemes:
+        return value
+    return f'https://invalid-schema/{value}'
+
+
+def escape_element(value):
+    mapping = {
+        '<': '&lt;',
+        '>': '&gt;',
+        '&': '&amp;',
+        '"': '&quot;',
+        "'": '&#x27;'
+    }
+    for o, r in mapping.items():
+        value = value.replace(o, r)
+    return value
+
+
+def render_as_html(folder: Folder, path='', include_icon=True) -> str:
     def _rec(x: typing.Union[Folder, Bookmark], d=0) -> str:
         if isinstance(x, Folder):
             return _df(x, d)
         else:
             return _db(x)
-
-    def _attr_url(value):
-        mapping = {
-            '"': '%22',
-            '>': '%3E'
-        }
-        for o, r in mapping.items():
-            value = value.replace(o, r)
-        res = urllib.parse.urlparse(value)
-        validate_schemes = {
-            'https',
-            'http',
-            'ftp',
-        }
-        if res.scheme in validate_schemes:
-            return value
-        return f'https://invalid-schema/{value}'
-
-    def _element(value):
-        mapping = {
-            '<': '&lt;',
-            '>': '&gt;',
-            '&': '&amp;',
-            '"': '&quot;',
-            "'": '&#x27;'
-        }
-        for o, r in mapping.items():
-            value = value.replace(o, r)
-        return value
 
     def _df(f: Folder, d=0) -> str:
         children_html_list = list(filter(None, [_rec(child, d + 1) for child in f.children]))
@@ -253,7 +262,7 @@ def render_as_html(folder: Folder, path='', include_icon=True, icon_cache_dir=No
             indent1 = ' ' * 4 * d * 2
             indent2 = ' ' * 4 * (d * 2 + 1)
             children_html = f"</li>\n{indent2}<li>".join(children_html_list)
-            return f'<p>{_element(f.title)}:</p>\n{indent1}<ol><li>{children_html}</li>\n{indent1}</ol>'
+            return f'<p>{escape_element(f.title)}:</p>\n{indent1}<ol><li>{children_html}</li>\n{indent1}</ol>'
         return ''
 
     def _db(b: Bookmark) -> str:
@@ -266,13 +275,10 @@ def render_as_html(folder: Folder, path='', include_icon=True, icon_cache_dir=No
         icon_html = '' if not icon else f'<img src="{icon}" width="32" height="32" />'
         return (
             '<div class="bookmark">'
-            f'<a href="{_attr_url(b.uri)}" referrerpolicy="no-referrer" target="_blank">'
-            f'{icon_html}<p>{_element(b.title)}</p>'
+            f'<a href="{escape_attr_url(b.uri)}" referrerpolicy="no-referrer" target="_blank">'
+            f'{icon_html}<p>{escape_element(b.title)}</p>'
             '</a></div>'
         )
-
-    if include_icon:
-        asyncio.run(get_all_icons())
 
     return f"""
 <html lang="zh-CN">
@@ -303,6 +309,120 @@ def render_as_html(folder: Folder, path='', include_icon=True, icon_cache_dir=No
         {_rec(folder)}
     </body>
 </html>"""
+
+
+def convert2list_with_tags(folder: Folder) -> typing.Tuple[typing.List[Bookmark], typing.Dict[str, int]]:
+    bookmarks = []
+    tags = collections.defaultdict(lambda: 0)
+    ts = []
+
+    def _(x):
+        if isinstance(x, Folder):
+            if x.title:
+                ts.append(x.title)
+            for child in x.children:
+                _(child)
+            if x.title:
+                ts.pop()
+        else:
+            x.tags = set(ts)
+            for t in ts:
+                tags[t] += 1
+            bookmarks.append(x)
+
+    _(folder)
+    total = len(bookmarks)
+    to_removes = [tag for tag, count in tags.items() if count == total]
+    for tag in to_removes:
+        del tags[tag]
+        for b in bookmarks:
+            if tag in b.tags:
+                b.tags.remove(tag)
+
+    return bookmarks, tags
+
+
+def render_as_html_with_tags(folder: Folder, path='', include_icon=True) -> str:
+    bookmarks, tags = convert2list_with_tags(folder)
+
+    def _loop_tags():
+        return '<div class="tag">' + '</div><div class="tag">'.join(map(lambda x: f'<span>{x[0]}</span><span>{x[1]}</span>', tags.items())) + '</div>'
+
+    def _loop_bookmarks():
+        def _(b):
+            if include_icon:
+                icon = b.icon_uri if b.icon_uri.startswith('data:image/') else get_svg_uri(b)
+                icon_html = f'<img src="{icon}" width="32" height="32" />'
+            else:
+                icon_html = ''
+
+            tags_html = '</div><div class="tag">'.join(b.tags)
+            if tags_html:
+                tags_html = f'<div class="tag">{tags_html}</div>'
+
+            return (
+                '<div class="bookmark">'
+                f'<a href="{escape_attr_url(b.uri)}" referrerpolicy="no-referrer" target="_blank">'
+                f'{icon_html}<p>{escape_element(b.title)}</p></a>'
+                f'<div class="tags">{tags_html}</div>'
+                '</div>'
+            )
+        return ''.join(map(_, bookmarks))
+
+    return '''<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Bookmarks</title>
+        <style>
+            .tags {
+                display: flex;
+                flex-wrap: wrap;
+                justify-content: center;
+                gap: 1vw;
+            }
+            .tags > .tag {
+                background: #a3d2ff;
+            }
+            .tag > span + span::before {
+                content: "(";
+            }
+            .tag > span + span::after {
+                content: ")";
+            }
+            .bookmarks {
+                margin-top: 3vh;
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+                grid-gap: 1vw;
+            }
+            .bookmark {
+                grid-auto-rows: max-content;
+                display: grid;
+                grid-template-columns: 64px 1fr;
+            }
+            .bookmark > a {
+                grid-column: 1 / 3;
+                grid-row: 1 / 3;
+            }
+            .bookmark .tags {
+                justify-content: left;
+                grid-column: 2;
+                grid-row: 1;
+            }
+            .bookmark p {
+                word-wrap: anywhere;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="tags">
+''' + _loop_tags() + '''
+        </div>
+        <div class="bookmarks">
+''' + _loop_bookmarks() + '''
+        </div>
+    </body>
+</html>'''
 
 
 def get_latest_firefox() -> typing.Optional[str]:
@@ -362,12 +482,14 @@ def main():
                         help='/path/to/bookmarks/file, if not supplied, the default (across the browser) will be used.')
     parser.add_argument('-p', '--path-filter', dest='path_filter', default='',
                         help='filter bookmarks by path, use "." to split parent and child')
+    parser.add_argument('-P', '--path-as-tag', dest='path_as_tag', action='store_true', help='path components as tags')
     parser.add_argument('--skip-empty', dest='skip_empty', action='store_true',
                         help='skip empty folder')
     icon_exclusive_group = parser.add_mutually_exclusive_group()
     icon_exclusive_group.add_argument('--no-icon', dest='include_icon', action='store_false',
-                        help='do not include icons in generated html')
-    icon_exclusive_group.add_argument('--icon-cache', dest='icon_cache_dir', default=None, help='use the cache dir for icons')
+                                      help='do not include icons in generated html')
+    icon_exclusive_group.add_argument('--icon-cache', dest='icon_cache_dir', default=None,
+                                      help='use the cache dir for icons')
     parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
     parser.add_argument('-v', '--verbose', action='count', default=0)
 
@@ -394,7 +516,13 @@ def main():
 
     with open(args.output_path, 'w+') as of:
         folder = browser_mapping[args.browser]['loader'](args.input_path, args.skip_empty)
-        of.write(render_as_html(folder, args.path_filter, args.include_icon, args.icon_cache_dir))
+        if args.include_icon:
+            get_all_icons(folder, args.path_filter, args.icon_cache_dir)
+        if args.path_as_tag:
+            html = render_as_html_with_tags(folder, args.path_filter, args.include_icon)
+        else:
+            html = render_as_html(folder, args.path_filter, args.include_icon)
+        of.write(html)
 
 
 if __name__ == "__main__":
