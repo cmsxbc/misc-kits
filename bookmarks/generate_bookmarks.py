@@ -311,12 +311,14 @@ def render_as_html(folder: Folder, path='', include_icon=True) -> str:
 </html>"""
 
 
-def convert2list_with_tags(folder: Folder) -> typing.Tuple[typing.List[Bookmark], typing.Dict[str, int]]:
+def convert2list_with_tags(folder: Folder, path='') -> typing.Tuple[typing.List[Bookmark], typing.Dict[str, int]]:
     bookmarks = []
     tags = collections.defaultdict(lambda: 0)
     ts = []
 
     def _(x):
+        if path and not x.path.startswith(path):
+            return
         if isinstance(x, Folder):
             if x.title:
                 ts.append(x.title)
@@ -342,23 +344,18 @@ def convert2list_with_tags(folder: Folder) -> typing.Tuple[typing.List[Bookmark]
     return bookmarks, tags
 
 
-def render_as_html_with_tags(folder: Folder, path='', include_icon=True) -> str:
-    bookmarks, tags = convert2list_with_tags(folder)
+def render_as_html_with_tags(folder: Folder, path='') -> str:
+    bookmarks, tags = convert2list_with_tags(folder, path)
 
     def _loop_tags():
-        return '<div class="tag">' + '</div><div class="tag">'.join(map(lambda x: f'<span>{x[0]}</span><span>{x[1]}</span>', tags.items())) + '</div>'
+        return ''.join(f'<div class="tag" data-name="{escape_element(n)}"><span>{escape_element(n)}</span><span>{c}</span></div>' for n, c in tags.items())
 
     def _loop_bookmarks():
         def _(b):
-            if include_icon:
-                icon = b.icon_uri if b.icon_uri.startswith('data:image/') else get_svg_uri(b)
-                icon_html = f'<img src="{icon}" width="32" height="32" />'
-            else:
-                icon_html = ''
+            icon = b.icon_uri if b.icon_uri.startswith('data:image/') else get_svg_uri(b)
+            icon_html = f'<img src="{icon}" width="32" height="32" />'
 
-            tags_html = '</div><div class="tag">'.join(b.tags)
-            if tags_html:
-                tags_html = f'<div class="tag">{tags_html}</div>'
+            tags_html = ''.join(f'<div class="tag" data-name="{escape_element(tag)}">{escape_element(tag)}</div>' for tag in b.tags)
 
             return (
                 '<div class="bookmark">'
@@ -367,7 +364,7 @@ def render_as_html_with_tags(folder: Folder, path='', include_icon=True) -> str:
                 f'<div class="tags">{tags_html}</div>'
                 '</div>'
             )
-        return ''.join(map(_, bookmarks))
+        return ''.join(_(b) for b in bookmarks)
 
     return '''<html lang="zh-CN">
     <head>
@@ -382,6 +379,9 @@ def render_as_html_with_tags(folder: Folder, path='', include_icon=True) -> str:
             }
             .tags > .tag {
                 background: #a3d2ff;
+            }
+            .tag.active {
+                background: #ffa3d2;
             }
             .tag > span + span::before {
                 content: "(";
@@ -400,6 +400,9 @@ def render_as_html_with_tags(folder: Folder, path='', include_icon=True) -> str:
                 display: grid;
                 grid-template-columns: 64px 1fr;
             }
+            .bookmark.inactive {
+                display: none;
+            }
             .bookmark > a {
                 grid-column: 1 / 3;
                 grid-row: 1 / 3;
@@ -415,12 +418,53 @@ def render_as_html_with_tags(folder: Folder, path='', include_icon=True) -> str:
         </style>
     </head>
     <body>
-        <div class="tags">
+        <div class="tags nav">
 ''' + _loop_tags() + '''
         </div>
         <div class="bookmarks">
 ''' + _loop_bookmarks() + '''
         </div>
+    <script>
+        var tag_clicked = false;
+        function clickTag(e) {
+            if (tag_clicked) {
+                return;
+            }
+            tag_clicked = true;
+            let ele = e.target;
+            while (!ele.dataset.hasOwnProperty('name')) {
+                ele = ele.parentElement;
+            }
+            let tag = ele.dataset.name;
+            let activate = !ele.classList.contains('active');
+            for (let other_tag_e of document.querySelectorAll('.nav .tag')) {
+                other_tag_e.classList.remove('active');
+            }
+            if (activate) {
+                ele.classList.add('active');
+            }
+            for (let bookmark of document.querySelectorAll('.bookmark')) {
+                let active_bookmark_tag = bookmark.querySelector(`[data-name="${tag}"]`);
+                for (let bookmark_tag of bookmark.querySelectorAll('.tag')) {
+                    bookmark_tag.classList.remove('active');
+                }
+                if (!activate) {
+                    bookmark.classList.remove('inactive');
+                } else if (active_bookmark_tag) {
+                    active_bookmark_tag.classList.add('active');
+                    bookmark.classList.remove('inactive');
+                } else {
+                    bookmark.classList.add('inactive');
+                }
+            }
+            tag_clicked = false;
+        };
+        (function () {
+            for (let e of document.querySelectorAll('.tag')) {
+                e.addEventListener('click', clickTag);
+            }
+        })();
+    </script>
     </body>
 </html>'''
 
@@ -505,21 +549,25 @@ def main():
         logger.error('%s does not exist!', args.input_path)
         sys.exit(1)
 
+    if args.icon_cache_dir and not os.path.isdir(args.icon_cache_dir):
+        logger.error('%s is not a directory!', args.icon_cache_dir)
+        sys.exit(1)
+
+    if args.path_as_tag and not args.include_icon:
+        logger.error('must include icon when use path as tag')
+        sys.exit(1)
+
     if os.path.exists(args.output_path):
         logger.warning('%s exists!', args.output_path)
         if not args.yes and input(f'Do you want to overwrite "{args.output_path}"?[Yy/Nn]').lower() != 'y':
             sys.exit(1)
-
-    if args.icon_cache_dir and not os.path.isdir(args.icon_cache_dir):
-        logger.error('%s is not a directory!', args.icon_cache_dir)
-        sys.exit(1)
 
     with open(args.output_path, 'w+') as of:
         folder = browser_mapping[args.browser]['loader'](args.input_path, args.skip_empty)
         if args.include_icon:
             get_all_icons(folder, args.path_filter, args.icon_cache_dir)
         if args.path_as_tag:
-            html = render_as_html_with_tags(folder, args.path_filter, args.include_icon)
+            html = render_as_html_with_tags(folder, args.path_filter)
         else:
             html = render_as_html(folder, args.path_filter, args.include_icon)
         of.write(html)
