@@ -11,6 +11,7 @@ import base64
 import hashlib
 import logging
 import collections
+import re
 import lz4.block
 import aiohttp
 import asyncio
@@ -33,6 +34,13 @@ class Bookmark:
     def __post_init__(self):
         if not self.icon_uri:
             self.icon_uri = '/favicon.ico'
+        self.update_icon_uri()
+
+    @property
+    def path(self):
+        return f'{self.parent}.{self.title}'
+
+    def update_icon_uri(self):
         res = urllib.parse.urlparse(self.icon_uri)
         if not res.netloc:
             if res.path.startswith('/'):
@@ -41,10 +49,6 @@ class Bookmark:
                     base_res.scheme, base_res.netloc, res.path, res.params, res.query, res.fragment))
             else:
                 self.icon_uri = urllib.parse.urljoin(self.uri, self.icon_uri)
-
-    @property
-    def path(self):
-        return f'{self.parent}.{self.title}'
 
 
 @dataclasses.dataclass
@@ -148,16 +152,16 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, ic
     if b.icon_uri.startswith('data:image/'):
         return
 
-    cache_path = ''
-    if icon_cache_dir:
-        cache_path = os.path.join(icon_cache_dir, base64.b32encode(b.icon_uri.encode()).decode())
-        if os.path.exists(cache_path):
-            logger.debug('use cache for %s: %s', b.icon_uri, cache_path)
-            with open(cache_path) as f:
-                b.icon_uri = f.read()
-            return
-    logger.debug('aio get: %s', b.icon_uri)
-    try:
+    async def _get():
+        cache_path = ''
+        if icon_cache_dir:
+            cache_path = os.path.join(icon_cache_dir, base64.b32encode(b.icon_uri.encode()).decode())
+            if os.path.exists(cache_path):
+                logger.debug('use cache for %s: %s', b.icon_uri, cache_path)
+                with open(cache_path) as f:
+                    b.icon_uri = f.read()
+                return
+        logger.debug('aio get: %s', b.icon_uri)
         async with session.get(b.icon_uri) as resp:
             data = await resp.read()
             if resp.status != 200:
@@ -172,9 +176,42 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, ic
             if cache_path:
                 with open(cache_path, 'w+') as f:
                     f.write(b.icon_uri)
+        return True
+
+    async def _get_icon_url():
+        logger.warning('try get icons from page for %s', b.title)
+        async with session.get(b.uri) as resp:
+            data = await resp.read()
+            if resp.status != 200:
+                logger.warning('cannot fetch data from %s, got http code: %d', b.uri, resp.status)
+                return
+            html = data.decode(resp.charset)
+            if ml := re.search(r'<link\s+[^>]*rel=(?P<quote>[\'"]?)[^\'">]*icon[^\'"]*(?P=quote)[^>]*>', html):
+                logger.debug('link matched: %s', ml.group(0))
+                if m := re.search(r'href=(?P<quote>[\'"]?)(?P<url>[^\'"]*?)(?P=quote)(\s|>)', ml.group(0)):
+                    logger.debug('href matched: %s', m.group(0))
+                    old_uri = b.icon_uri
+                    b.icon_uri = m.group('url')
+                    b.update_icon_uri()
+                    return b.icon_uri != old_uri
+                else:
+                    logger.warning('cannot get icon url from icon link tag from %s', b.uri)
+            else:
+                logger.warning('cannot get icon link tag from %s', b.uri)
+
+    try:
+        await _get()
     except (aiohttp.ClientOSError, aiohttp.ServerTimeoutError, asyncio.exceptions.TimeoutError) as e:
         logger.warning('while fetch %s catch exception: %s', b.icon_uri, e)
-        return
+        retry_ret = False
+        try:
+            if await _get_icon_url():
+                logger.warning('try to retrieve icon with url from page for %s(%s)', b.title, b.uri)
+                retry_ret = await _get()
+        finally:
+            if not retry_ret:
+                logger.warning('failed to retrieve icon from page for %s(%s)', b.title, b.uri)
+            return
     except Exception as e:
         logger.error('while fetch %s catch exception: %s', b.icon_uri, e)
         return
