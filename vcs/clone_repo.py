@@ -35,34 +35,60 @@ def parse(repo_uri: str) -> Repo:
     if not r.path.endswith('.git') and not r.path.startswith('git@') and 'git' not in r.netloc:
         raise ValueError("Only support git yet")
     if r.params or r.query or r.fragment:
-        raise ValueError("Unsupportted uri")
+        raise ValueError(f"Unsupportted uri: {repo_uri}")
     if not r.scheme and not r.netloc:
         if not r.path.startswith('git@'):
-            raise ValueError("Unsupportted uri")
-        if m := re.fullmatch(r'git@(?P<host>[^/:]+):(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git)?', r.path):
+            raise ValueError(f"Unsupportted uri: {repo_uri}")
+        if m := re.fullmatch(r'git@(?P<host>[^/:]+):(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git|/)?', r.path):
             return Repo(repo_uri, VCS.git, m.group('repo_name'), m.group('user_name'), m.group('host'))
         else:
-            raise ValueError("Unsupportted uri")
+            raise ValueError(f"Unsupportted uri: {repo_uri}")
     elif r.scheme == 'https':
-        if m := re.fullmatch(r'/(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git)?', r.path):
+        if m := re.fullmatch(r'/(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git|/)?', r.path):
             return Repo(repo_uri, VCS.git, m.group('repo_name'), m.group('user_name'), r.netloc)
         else:
-            raise ValueError("Unsupportted uri")
+            raise ValueError(f"Unsupportted uri: {repo_uri}")
     else:
-        raise ValueError('Unsupportted uri')
+        raise ValueError(f"Unsupportted uri: {repo_uri}")
+
+
+def move(path: str):
+    if not os.path.exists(path):
+        raise ValueError(f"{path} does not exist!")
+    if not os.path.isdir(path):
+        raise ValueError(f"{path} is nor directory!")
+    remote = subprocess.check_output(['git', 'remote'], cwd=path).decode().strip()
+    remote_uri = subprocess.check_output(['git', 'remote', 'get-url', remote], cwd=path).decode().strip()
+    repo = parse(remote_uri)
+    repo_target_dir = os.path.join(repo.host, repo.user)
+    if os.path.relpath(repo_target_dir, path) == '..':
+        raise ValueError(f"{path} is already in correct location")
+    repo_target = os.path.join(repo_target_dir, repo.name)
+    if os.path.exists(repo_target):
+        raise ValueError(f"Duplicated!! {repo_target} has existed!")
+    os.makedirs(repo_target_dir, mode=0o700, exist_ok=True)
+    origin_repo_name = os.path.basename(path)
+    if origin_repo_name != repo.name:
+        print(f'[WARN] will change dir name from {origin_repo_name} to {repo.name}')
+    subprocess.check_call(['mv', path, repo_target])
 
 
 def print_usage():
     print(sys.argv[0], 'repo_uri')
 
 
-def main(repo_uri):
-    repo = parse(repo_uri)
-    clone(repo)
-
-
 if __name__ == '__main__':
-    if len(sys.argv) != 2:
+    if len(sys.argv) < 2:
         print_usage()
         sys.exit(1)
-    main(sys.argv[1])
+    if len(sys.argv) == 2:
+        repo = parse(sys.argv[1])
+        clone(repo)
+    elif len(sys.argv) == 3:
+        if sys.argv[1] != 'move':
+            print_usage()
+            sys.exit(1)
+        move(sys.argv[2])
+    else:
+        print_usage()
+        sys.exit(1)
