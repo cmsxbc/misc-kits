@@ -68,8 +68,10 @@ STYLE = """.hidden {
         }
         .ext {
             height: 3vw;
-            width: 5vw;
+            min-width: 5vw;
             vertical-align: baseline;
+            padding-left: 0.5vw;
+            padding-right: 0.5vw;
             border-radius: .8vw;
             background: #a3d2ff;
             line-height: 3vw;
@@ -128,7 +130,7 @@ STYLE = """.hidden {
             }
             .ext {
                 height: 8vw;
-                width: 20vw;
+                min-width: 20vw;
                 border-radius: 2vw;
                 line-height: 8vw;
             }
@@ -277,7 +279,7 @@ def upload_file():
 parser = argparse.ArgumentParser()
 parser.add_argument('-l', '--listen', default='0.0.0.0')
 parser.add_argument('-p', '--port', type=int, default=5000)
-parser.add_argument('--ext', dest='exts', nargs='+', type=str, default=[])
+parser.add_argument('--ext', dest='exts', action='append', type=str, default=[])
 parser.add_argument('-d', '--debug', dest='debug', action='store_true')
 args = parser.parse_args()
 
