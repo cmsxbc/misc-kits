@@ -27,7 +27,13 @@ def clone(repo: Repo):
     os.makedirs(dirpath, mode=0o700, exist_ok=True)
     if os.path.exists(os.path.join(dirpath, repo.name)):
         raise ValueError(f'Seem duplicate {repo.uri}')
-    subprocess.check_call(['git', 'clone', repo.uri], cwd=dirpath)
+    try_count = 0
+    while True:
+        try_count += 1
+        print(f'Try {try_count} clone {repo}')
+        process = subprocess.run(['git', 'clone', repo.uri], cwd=dirpath)
+        if process.returncode == 0:
+            break
 
 
 def parse(repo_uri: str) -> Repo:
@@ -35,21 +41,21 @@ def parse(repo_uri: str) -> Repo:
     if not r.path.endswith('.git') and not r.path.startswith('git@') and 'git' not in r.netloc:
         raise ValueError("Only support git yet")
     if r.params or r.query or r.fragment:
-        raise ValueError(f"Unsupportted uri: {repo_uri}")
+        raise ValueError(f"Unsupported uri: {repo_uri}")
     if not r.scheme and not r.netloc:
         if not r.path.startswith('git@'):
-            raise ValueError(f"Unsupportted uri: {repo_uri}")
+            raise ValueError(f"Unsupported uri: {repo_uri}")
         if m := re.fullmatch(r'git@(?P<host>[^/:]+):(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git|/)?', r.path):
             return Repo(repo_uri, VCS.git, m.group('repo_name'), m.group('user_name'), m.group('host'))
         else:
-            raise ValueError(f"Unsupportted uri: {repo_uri}")
+            raise ValueError(f"Unsupported uri: {repo_uri}")
     elif r.scheme == 'https':
         if m := re.fullmatch(r'/(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git|/)?', r.path):
             return Repo(repo_uri, VCS.git, m.group('repo_name'), m.group('user_name'), r.netloc)
         else:
-            raise ValueError(f"Unsupportted uri: {repo_uri}")
+            raise ValueError(f"Unsupported uri: {repo_uri}")
     else:
-        raise ValueError(f"Unsupportted uri: {repo_uri}")
+        raise ValueError(f"Unsupported uri: {repo_uri}")
 
 
 def move(path: str):
@@ -74,21 +80,16 @@ def move(path: str):
 
 
 def print_usage():
-    print(sys.argv[0], 'repo_uri')
+    print(sys.argv[0], '[[clone] | move ] repo_uri|path')
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print_usage()
-        sys.exit(1)
-    if len(sys.argv) == 2:
-        repo = parse(sys.argv[1])
-        clone(repo)
-    elif len(sys.argv) == 3:
-        if sys.argv[1] != 'move':
+    match sys.argv[1:]:
+        case [str(repo_uri)] | ('clone', str(repo_uri)):
+            repo = parse(repo_uri)
+            clone(repo)
+        case ('move', str(path)):
+            move(path)
+        case _:
             print_usage()
             sys.exit(1)
-        move(sys.argv[2])
-    else:
-        print_usage()
-        sys.exit(1)
