@@ -1,10 +1,18 @@
+"""
+!!! Never use it in public production.
+!!! Never use it in public production.
+!!! Never use it in public production.
+!!! Never use it in public production.
+!!! Never use it in public production.
+!!! Never use it in public production.
+
+"""
 import datetime
 import os
 import argparse
 import flask
 import pyotp
 import qrcode
-import requests.auth
 import werkzeug.datastructures
 
 
