@@ -57,9 +57,9 @@ class Folder:
     parent: str
     modified: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.now)
     created: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.now)
-    children: typing.List[typing.Union[Folder, Bookmark]] = dataclasses.field(default_factory=list)
+    children: list[Folder | Bookmark] = dataclasses.field(default_factory=list)
 
-    def add(self, child: typing.Union[Folder, Bookmark]):
+    def add(self, child: Folder | Bookmark):
         self.children.append(child)
 
     @property
@@ -74,11 +74,11 @@ def t(timestamp):
     return datetime.datetime.fromtimestamp(timestamp / 1e6)
 
 
-def general_builder(root: typing.Dict, folder_type, bookmark_type, name_key: str, uri_key: str,
+def general_builder(root: dict, folder_type, bookmark_type, name_key: str, uri_key: str,
                     created_key='', modified_key='', icon_key='',
                     type_key='type', children_key='children',
-                    skip_empty=False, skip_func: typing.Callable[[typing.Dict], bool] = lambda _: True):
-    def _rec(d: typing.Union[list, dict], c: typing.Optional[Folder] = None) -> Folder:
+                    skip_empty=False, skip_func: typing.Callable[[dict], bool] = lambda _: True):
+    def _rec(d: list | dict, c: typing.Optional[Folder] = None) -> Folder:
         if isinstance(d, list):
             assert isinstance(c, Folder)
             for child in d:
@@ -232,14 +232,14 @@ def get_svg_uri(b: Bookmark):
     return f'data:image/svg+xml;base64,{data}'
 
 
-def get_all_icons(folder, path='', icon_cache_dir=None):
+def get_all_icons(folder, paths: list[str] = None, icon_cache_dir=None):
 
-    def _rec_icon(s: aiohttp.ClientSession, t: typing.List, x: typing.Union[Folder, Bookmark]):
+    def _rec_icon(s: aiohttp.ClientSession, t: list, x: Folder | Bookmark):
         if isinstance(x, Folder):
             for child in x.children:
                 _rec_icon(s, t, child)
             return
-        elif path and not x.path.startswith(path):
+        elif paths and not any(x.path.startswith(path) for path in paths):
             return
         t.append(asyncio.ensure_future(bookmark_icon_uri2data(s, x, icon_cache_dir)))
 
@@ -284,8 +284,8 @@ def escape_element(value):
     return value
 
 
-def render_as_html(folder: Folder, path='', include_icon=True) -> str:
-    def _rec(x: typing.Union[Folder, Bookmark], d=0) -> str:
+def render_as_html(folder: Folder, paths: list[str] = None, include_icon=True) -> str:
+    def _rec(x: Folder | Bookmark, d=0) -> str:
         if isinstance(x, Folder):
             return _df(x, d)
         else:
@@ -293,7 +293,7 @@ def render_as_html(folder: Folder, path='', include_icon=True) -> str:
 
     def _df(f: Folder, d=0) -> str:
         children_html_list = list(filter(None, [_rec(child, d + 1) for child in f.children]))
-        if not path or (path and f.path.startswith(path)) or len(children_html_list) > 0:
+        if not paths or (paths and any(f.path.startswith(path) for path in paths)) or len(children_html_list) > 0:
             if len(children_html_list) == 1:
                 return children_html_list[0]
             indent1 = ' ' * 4 * d * 2
@@ -303,7 +303,7 @@ def render_as_html(folder: Folder, path='', include_icon=True) -> str:
         return ''
 
     def _db(b: Bookmark) -> str:
-        if path and not b.path.startswith(path):
+        if paths and not any(b.path.startswith(path) for path in paths):
             return ''
         if include_icon:
             icon = b.icon_uri if b.icon_uri.startswith('data:image/') else get_svg_uri(b)
@@ -348,14 +348,12 @@ def render_as_html(folder: Folder, path='', include_icon=True) -> str:
 </html>"""
 
 
-def convert2list_with_tags(folder: Folder, path='') -> typing.Tuple[typing.List[Bookmark], typing.Dict[str, int]]:
+def convert2list_with_tags(folder: Folder, paths: list[str]) -> typing.Tuple[list[Bookmark], dict[str, int]]:
     bookmarks = []
     tags = collections.defaultdict(lambda: 0)
     ts = []
 
     def _(x):
-        if path and not x.path.startswith(path):
-            return
         if isinstance(x, Folder):
             if x.title:
                 ts.append(x.title)
@@ -363,6 +361,8 @@ def convert2list_with_tags(folder: Folder, path='') -> typing.Tuple[typing.List[
                 _(child)
             if x.title:
                 ts.pop()
+        elif paths and not any(x.path.startswith(path) for path in paths):
+            return
         else:
             x.tags = set(ts)
             for t in ts:
@@ -381,8 +381,8 @@ def convert2list_with_tags(folder: Folder, path='') -> typing.Tuple[typing.List[
     return bookmarks, tags
 
 
-def render_as_html_with_tags(folder: Folder, path='') -> str:
-    bookmarks, tags = convert2list_with_tags(folder, path)
+def render_as_html_with_tags(folder: Folder, paths: list[str] = None) -> str:
+    bookmarks, tags = convert2list_with_tags(folder, paths)
 
     def _loop_tags():
         return ''.join(f'<div class="tag" data-name="{escape_element(n)}"><span>{escape_element(n)}</span><span>{c}</span></div>' for n, c in tags.items())
@@ -476,6 +476,9 @@ def render_as_html_with_tags(folder: Folder, path='') -> str:
             let activate = !ele.classList.contains('active');
             for (let other_tag_e of document.querySelectorAll('.nav .tag')) {
                 other_tag_e.classList.remove('active');
+                if (activate && other_tag_e.dataset.name == tag) {
+                    other_tag_e.classList.add('active');
+                }
             }
             if (activate) {
                 ele.classList.add('active');
@@ -561,8 +564,8 @@ def main():
     parser.add_argument('output_path', help='/path/for/the/generated/html/to/be/stored')
     parser.add_argument('-i', dest='input_path', required=False, default=None,
                         help='/path/to/bookmarks/file, if not supplied, the default (across the browser) will be used.')
-    parser.add_argument('-p', '--path-filter', dest='path_filter', default='',
-                        help='filter bookmarks by path, use "." to split parent and child')
+    parser.add_argument('-p', '--path-filter', metavar='PATH_FILTER', dest='path_filters', default=[], action='append',
+                        help='filter bookmarks by path, use "." to split parent and child. apply multiple times works as "OR"')
     parser.add_argument('-P', '--path-as-tag', dest='path_as_tag', action='store_true', help='path components as tags')
     parser.add_argument('--skip-empty', dest='skip_empty', action='store_true',
                         help='skip empty folder')
@@ -602,11 +605,11 @@ def main():
     with open(args.output_path, 'w+') as of:
         folder = browser_mapping[args.browser]['loader'](args.input_path, args.skip_empty)
         if args.include_icon:
-            get_all_icons(folder, args.path_filter, args.icon_cache_dir)
+            get_all_icons(folder, args.path_filters, args.icon_cache_dir)
         if args.path_as_tag:
-            html = render_as_html_with_tags(folder, args.path_filter)
+            html = render_as_html_with_tags(folder, args.path_filters)
         else:
-            html = render_as_html(folder, args.path_filter, args.include_icon)
+            html = render_as_html(folder, args.path_filters, args.include_icon)
         of.write(html)
 
 
