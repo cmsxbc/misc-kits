@@ -3,6 +3,7 @@ from typing import List, Callable, Optional, Dict, Union, TypeVar, Iterable, Tup
 from decimal import Decimal, DefaultContext
 from dataclasses import dataclass, field, InitVar
 from copy import deepcopy, copy
+import itertools
 import argparse
 
 
@@ -220,6 +221,7 @@ class SalaryTaxRate:
         tax_rate = self.tax_rate
         while val > tax_rate.limit:
             tax_rate = tax_rate.next_step
+        # print(f"get {tax_rate=} for {val=}")
         return tax_rate
 
     def calc(self, val: Money) -> Money:
@@ -259,6 +261,7 @@ class TaxDetail:
     income: Money = m('nan')
 
     def __post_init__(self):
+        assert self.tax >= 0, f"negative tax: {self=}"
         if is_nan(self.income):
             self.income = self.salary - self.tax - self.fund - self.insurance
         assert self.validate(), str(self)
@@ -383,7 +386,8 @@ class YearlyTax(AccTax):
                 detail.pretty(func=func, idx=idx)
             else:
                 detail.pretty(func=lambda x: func('bs', x))
-        self.bonus_detail.pretty(func=lambda x: func(' b', x))
+        if self.bonus_detail:
+            self.bonus_detail.pretty(func=lambda x: func(' b', x))
         super().pretty(func=lambda x: func('to:', x))
 
 
@@ -447,10 +451,11 @@ class Taxpayer:
                 min_tax = cur_tax
         for bonus in package.bonuses:
             if bonus is min_bonus:
-                yearly_tax.add_bonus(self.calc_bonus(bonus))
+                continue
             else:
                 yearly_tax.tax_base += bonus
                 yearly_tax.add(TaxDetail(bonus, self.salary_tax_rate.calc(yearly_tax.tax_base) - yearly_tax.tax))
+        yearly_tax.add_bonus(self.calc_bonus(min_bonus))
         return yearly_tax
 
     def calc_all_package(self, package: YearlyPackage, additional_free: Money = m('0'),
@@ -458,14 +463,16 @@ class Taxpayer:
                          force_insurance_base: Money = m('inf')) -> Dict[Bonus, YearlyTax]:
         base_yearly_tax = self.calc_salaries(package, additional_free, force_fund_base, force_insurance_base, tax_klass=YearlyTax)
         yearly_taxes = {}
-        for as_bonus in package.bonuses:
+        for as_bonus in itertools.chain([None], package.bonuses):
             yearly_tax = deepcopy(base_yearly_tax)
             for bonus in package.bonuses:
                 if bonus is as_bonus:
-                    yearly_tax.add_bonus(self.calc_bonus(bonus))
+                    continue
                 else:
                     yearly_tax.tax_base += bonus
                     yearly_tax.add(TaxDetail(bonus, self.salary_tax_rate.calc(yearly_tax.tax_base) - yearly_tax.tax))
+            if as_bonus is not None:
+                yearly_tax.add_bonus(self.calc_bonus(as_bonus))
             yearly_taxes[as_bonus] = yearly_tax
         return yearly_taxes
 
