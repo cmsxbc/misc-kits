@@ -1,13 +1,19 @@
 import os
+
+import flask
 from flask import Flask, flash, request, redirect
 from werkzeug.utils import secure_filename
 from datetime import datetime
 import time
 import argparse
+import mimetypes
+
+
+import magic
 
 
 UPLOAD_FOLDER = './files'
-ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'mp4', 'mov'}
+ALLOWED_MIMES = {mimetypes.types_map[f".{ext}"] for ext in ('txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'mp4', 'mov')}
 
 STYLE = """.hidden {
             display: none !important;
@@ -47,6 +53,9 @@ STYLE = """.hidden {
             border-radius: 1vw;
             background: #13f824;
         }
+        div.uploadeds.failed {
+            background: #f81324;
+        }
         div.uploadeds > div {
             padding: 0 1vw;
         }
@@ -60,13 +69,13 @@ STYLE = """.hidden {
             content: "=>";
             color: #ffaacc;
         }
-        .exts {
+        .mimes {
             display: flex;
             flex-wrap: wrap;
             justify-content: center;
             gap: 1vw;
         }
-        .ext {
+        .mime {
             height: 3vw;
             min-width: 5vw;
             vertical-align: baseline;
@@ -128,7 +137,7 @@ STYLE = """.hidden {
                 max-width: 100%;
                 font-size: 5vw;
             }
-            .ext {
+            .mime {
                 height: 8vw;
                 min-width: 20vw;
                 border-radius: 2vw;
@@ -185,11 +194,6 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['SECRET_KEY'] = 'xxxx'
 
 
-def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-
 def get_upload_folder():
     folder = os.path.join(app.config['UPLOAD_FOLDER'], datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d'))
     if not os.path.isdir(folder):
@@ -198,15 +202,20 @@ def get_upload_folder():
 
 
 def save_a_file(f):
-    if f and f.filename and allowed_file(f.filename):
+    if f and f.filename:
+        buffer = f.stream.read()
+        f.stream.seek(0)
+        mime = magic.from_buffer(buffer, True)
+        if mime not in ALLOWED_MIMES:
+            return False, mime
         filename = secure_filename(f.filename)
         filepath = os.path.join(get_upload_folder(), filename)
         if os.path.exists(filepath):
             filename = f'{time.time()}-{filename}'
             filepath = os.path.join(get_upload_folder(), filename)
         f.save(filepath)
-        return filename
-    return 'field'
+        return True, filename
+    return False, None
 
 
 @app.route('/', methods=['GET', 'POST'])
@@ -223,19 +232,21 @@ def upload_file():
         if len(files) == 1 and files[0].filename == '':
             flash('No files part')
             return redirect(request.url)
-        uploaded_file_names = list(map(save_a_file, files))
-        uploaded_file_list = f"""
-        <div class="uploadeds">
-            {'</div><div class="uploadeds">'.join(
-                f'<div class="origin">{f.filename}</div><div class="saved">{name}</div>' if f.filename != name else f'<div class="saved">{name}</div>'
-                for f, name in zip(files, uploaded_file_names)
-            )}
-        </div>
-        """
+        uploaded_file_info_list = []
+        for file in files:
+            saved, reason = save_a_file(file)
+            sname = flask.escape(file.filename)
+            sreason = flask.escape(reason)
+            if saved:
+                uploaded_file_info_list.append(f'<div class="uploadeds"><div class="origin">{sname}</div><div class="saved">{sreason}</div></div>')
+            elif reason is None:
+                uploaded_file_info_list.append(f'<div class="uploadeds failed"><div class="origin">{sname}</div><div class="reason">{sreason}</div></div>')
+            else:
+                uploaded_file_info_list.append(f'<div class="uploadeds failed"><div class="origin">{sname}</div><div class="reason">{sreason} is forbidden</div></div>')
+
+        uploaded_file_list = ''.join(uploaded_file_info_list)
     else:
         uploaded_file_list = ''
-
-
 
     return f'''
 <!doctype html>
@@ -252,8 +263,8 @@ def upload_file():
         <div class="uploadeds-container {'' if uploaded_file_list else 'hidden'}">
             {uploaded_file_list}
         </div>
-        <div class="exts-container">
-            <div class="exts"><div class="ext">{'</div><div class="ext">'.join(ALLOWED_EXTENSIONS)}</div></div>
+        <div class="mimes-container">
+            <div class="mimes"><div class="mime">{'</div><div class="mime">'.join(ALLOWED_MIMES)}</div></div>
         </div>
         <div class="form-container">
             <form method=post enctype=multipart/form-data>
@@ -276,13 +287,16 @@ def upload_file():
 </html>'''
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('-l', '--listen', default='0.0.0.0')
-parser.add_argument('-p', '--port', type=int, default=5000)
-parser.add_argument('--ext', dest='exts', action='append', type=str, default=[])
-parser.add_argument('-d', '--debug', dest='debug', action='store_true')
-args = parser.parse_args()
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-l', '--listen', default='0.0.0.0')
+    parser.add_argument('-p', '--port', type=int, default=5000)
+    parser.add_argument('--ext', dest='exts', action='append', type=str, default=[])
+    parser.add_argument('--mime', dest='mimes', action='append', type=str, default=[])
+    parser.add_argument('-d', '--debug', dest='debug', action='store_true')
+    args = parser.parse_args()
 
-ALLOWED_EXTENSIONS.update(args.exts)
+    ALLOWED_MIMES.update(args.mimes)
+    ALLOWED_MIMES.update(mimetypes.types_map[f".{ext}"] for ext in args.exts)
 
-app.run(args.listen, args.port, debug=args.debug)
+    app.run(args.listen, args.port, debug=args.debug)
