@@ -22,6 +22,7 @@ function IWannaForget(class_suffix, limit=10, fcb=()=>console.log('finished!'), 
                     }
                 }
                 if (!hasDelete) {
+                    console.log("There is no delete, exit!!!");
                     return;
                 }
                 setTimeout(
@@ -54,12 +55,32 @@ function IWannaForgetAll(class_suffix, offset=0) {
         window.scrollTo(0, ItemsPreLoop * 1000 * 2);
         setTimeout(() => {
             document.querySelector('i.woo-font--backTop').parentElement.parentElement.click()
-            // window.scroll(0, 100);
-            // document.querySelector('div.vue-recycle-scroller__item-wrapper').children[0].focus();
+            window.scroll(0, 100);
+            document.querySelector('div.vue-recycle-scroller__item-wrapper').children[0].focus();
             setTimeout(() => IWannaForget(class_suffix, ItemsPreLoop, IWishYouCanBeHappy, true, offset), 1000);
         }, 10000);
     }
     IWannaForget(class_suffix, ItemsPreLoop, IWishYouCanBeHappy, false, offset);
-    // IWishYouCanBeHappy();
 }
+
+(function IWillHelpYouForgetAll() {
+    let suffixes = {}
+    for (let action_btn of document.querySelectorAll("i.woo-font--angleDown")) {
+        let classList = Array.from(action_btn.classList);
+        for (let className of classList) {
+            if (!className.startsWith("morepop_action_")) {
+                continue;
+            }
+            let suffix = className.replace("morepop_action_", "");
+            if (suffix in suffixes) {
+                suffixes[suffix] += 1;
+            } else {
+                suffixes[suffix] = 1;
+            }
+        }
+    }
+    let sorted_suffixes = Object.keys(suffixes).sort((a, b) => suffixes[b] - suffixes[a]);
+    console.log(suffixes, sorted_suffixes);
+    IWannaForgetAll(sorted_suffixes[0]);
+})();
 
