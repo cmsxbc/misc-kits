@@ -2,8 +2,8 @@ import os
 
 import flask
 from flask import Flask, flash, request, redirect
-from werkzeug.utils import secure_filename
 from datetime import datetime
+import re
 import time
 import argparse
 import mimetypes
@@ -208,7 +208,7 @@ def save_a_file(f):
         mime = magic.from_buffer(buffer, True)
         if mime not in ALLOWED_MIMES:
             return False, mime
-        filename = secure_filename(f.filename)
+        filename = re.sub(r'\./\\\s', '_', f.filename)
         filepath = os.path.join(get_upload_folder(), filename)
         if os.path.exists(filepath):
             filename = f'{time.time()}-{filename}'
