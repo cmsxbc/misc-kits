@@ -4,8 +4,12 @@ Weibo is sooooooooo terrible!
 
 function IWannaForget(class_suffix, limit=10, fcb=()=>console.log('finished!'), reversed=false, offset=0) {
     function Forget(cb, interval) {
-        var allWeiboInPage = document.querySelector('div.vue-recycle-scroller__item-wrapper').children,
-            idx = reversed ? allWeiboInPage.length - 1 - offset: offset;
+        var allWeiboInPage = document.querySelector('div.vue-recycle-scroller__item-wrapper')?.children;
+        if (!allWeiboInPage) {
+            console.log("There is no weibo, exit!!!");
+            return;
+        }
+        var idx = reversed ? allWeiboInPage.length - 1 - offset: offset;
         if (idx > allWeiboInPage.length - 1 || idx < 0) {
             setTimeout(cb, interval);
             return;
