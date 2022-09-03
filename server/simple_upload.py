@@ -1,13 +1,13 @@
 import os
-
-import flask
-from flask import Flask, flash, request, redirect
-from datetime import datetime
+import hashlib
 import re
 import time
 import argparse
-import mimetypes
+from datetime import datetime
 
+import flask
+from flask import Flask, flash, request, redirect
+import mimetypes
 
 import magic
 
@@ -211,6 +211,11 @@ def save_a_file(f):
         filename = re.sub(r'\./\\\s', '_', f.filename)
         filepath = os.path.join(get_upload_folder(), filename)
         if os.path.exists(filepath):
+            upload_md5 = hashlib.md5(buffer)
+            with open(filepath, 'rb') as ef:
+                exist_md5 = hashlib.md5(ef.read())
+            if exist_md5.digest() == upload_md5.digest():
+                return True, "existed!!!!"
             filename = f'{time.time()}-{filename}'
             filepath = os.path.join(get_upload_folder(), filename)
         f.save(filepath)
