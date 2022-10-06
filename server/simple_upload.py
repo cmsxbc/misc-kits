@@ -14,6 +14,7 @@ import magic
 
 UPLOAD_FOLDER = './files'
 ALLOWED_MIMES = {mimetypes.types_map[f".{ext}"] for ext in ('txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'mp4', 'mov')}
+VIEWER_URL = ''
 
 STYLE = """.hidden {
             display: none !important;
@@ -253,6 +254,10 @@ def upload_file():
     else:
         uploaded_file_list = ''
 
+    viewer = ''
+    if VIEWER_URL:
+        viewer = f'<div><a href="{VIEWER_URL}">viewer</a></div>'
+
     return f'''
 <!doctype html>
 <html>
@@ -284,6 +289,7 @@ def upload_file():
                 </div>
             </form>
         </div>
+        {viewer}
     </div>
     <script>
         {SCRIPT}
@@ -298,10 +304,11 @@ if __name__ == "__main__":
     parser.add_argument('-p', '--port', type=int, default=5000)
     parser.add_argument('--ext', dest='exts', action='append', type=str, default=[])
     parser.add_argument('--mime', dest='mimes', action='append', type=str, default=[])
+    parser.add_argument('--viewer-url', dest='viewer_url', default='')
     parser.add_argument('-d', '--debug', dest='debug', action='store_true')
     args = parser.parse_args()
 
     ALLOWED_MIMES.update(args.mimes)
     ALLOWED_MIMES.update(mimetypes.types_map[f".{ext}"] for ext in args.exts)
-
+    VIEWER_URL = args.viewer_url
     app.run(args.listen, args.port, debug=args.debug)
