@@ -3,6 +3,7 @@ import sys
 import os
 import subprocess
 import re
+import collections
 import dataclasses
 import enum
 import urllib.parse
@@ -79,12 +80,39 @@ def move(path: str):
     subprocess.check_call(['mv', path, repo_target])
 
 
+def update(path: str):
+    try_count = 0
+    while True:
+        try_count += 1
+        print(f'Try {try_count} update {path}')
+        process = subprocess.run(['git', 'pull'], cwd=path)
+        if process.returncode == 0:
+            break
+
+
+def update_all(max_depth=3):
+    Item = collections.namedtuple("Item", ("path", "depth"))
+    dir_items = [Item(".", 0)]
+    while dir_items:
+        item = dir_items.pop()
+        git_dir = os.path.join(item.path, ".git")
+        if os.path.exists(git_dir) and os.path.isdir(git_dir):
+            update(item.path)
+        elif item.depth < max_depth:
+            for sub_dir in os.listdir(item.path):
+                dir_items.append(Item(os.path.join(item.path, sub_dir), item.depth + 1))
+        else:
+            print(f"skip {item=}")
+
+
 def print_usage():
     print(sys.argv[0], '[[clone] | move ] repo_uri|path')
 
 
 if __name__ == '__main__':
     match sys.argv[1:]:
+        case ('update-all' | 'update_all', ):
+            update_all()
         case [str(repo_uri)] | ('clone', str(repo_uri)):
             repo = parse(repo_uri)
             clone(repo)
