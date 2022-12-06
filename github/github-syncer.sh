@@ -2,9 +2,9 @@
 
 set -eu
 
+GITHUB_DOMAIN="github.com"
 GITHUB_TOKEN="$(cat token.txt)"
 GITHUB_REPO_DIR="/srv/git"
-GITHUB_REPO_DIR="."
 PER_PAGE=100
 PUSH_DELAY=3600
 
@@ -33,16 +33,23 @@ do
     repo_dir="${GITHUB_REPO_DIR}/${full_name}.git"
     if [[ -e "$repo_dir" ]];then
         echo "fetch $full_name"
-        pushed_ts=$(jq ".\"${full_name}\"" pushed.json)
-        limit_ts=$(( pushed_ts - PUSH_DELAY ))
-        pushd "$repo_dir"
-        commit_ts=$(git log -1 --format=%ct)
-        author_ts=$(git log -1 --format=%at)
-        echo "commit=${commit_ts},author=${author_ts},pushed=${pushed_ts},limit=${limit_ts}"
-        if [ $limit_ts -le "$commit_ts" ] && [ $limit_ts -le "$author_ts" ];then
-            echo "consider no update, skip"
-        else
+        # shellcheck disable=SC2012
+        if [[ "$(ls -1 "${repo_dir}/objects/pack" | wc -l)" == "0" ]];then
+            echo "empty repo, fetch anyway"
+            pushd "$repo_dir"
             git fetch origin "+refs/heads/*:refs/heads/*"
+        else
+            pushed_ts=$(jq ".\"${full_name}\"" pushed.json)
+            limit_ts=$(( pushed_ts - PUSH_DELAY ))
+            pushd "$repo_dir"
+            commit_ts=$(git log -1 --format=%ct)
+            author_ts=$(git log -1 --format=%at)
+            echo "commit=${commit_ts},author=${author_ts},pushed=${pushed_ts},limit=${limit_ts}"
+            if [ $limit_ts -le "$commit_ts" ] && [ $limit_ts -le "$author_ts" ];then
+                echo "consider no update, skip"
+            else
+                git fetch origin "+refs/heads/*:refs/heads/*"
+            fi
         fi
         popd
     else
@@ -50,7 +57,7 @@ do
         echo "clone $full_name"
         mkdir -p "$owner_dir"
         pushd "$owner_dir"
-        git clone --bare "git@github.com:${full_name}"
+        git clone --bare "git@${GITHUB_DOMAIN}:${full_name}"
         popd
         if grep -q 'edit this file' "${repo_dir}/description";then
             echo "sync of https://github.com/${full_name}" > "${repo_dir}/description"
