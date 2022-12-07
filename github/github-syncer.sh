@@ -2,14 +2,21 @@
 
 set -eu
 
-GITHUB_DOMAIN="github.com"
-GITHUB_TOKEN="$(cat token.txt)"
-GITHUB_REPO_DIR="/srv/git"
-PER_PAGE=100
-PUSH_DELAY=3600
+GITHUB_DOMAIN="${GITHUB_DOMAIN:-github.com}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-$(cat token.txt)}"
+GITHUB_REPO_DIR="${GITHUB_REPO_DIR:-/srv/git}"
+PER_PAGE="${PER_PAGE:-100}"
+PUSH_DELAY="${PUSH_DELAY:-3600}"
+
+echo GITHUB_DOMAIN=$GITHUB_DOMAIN
+echo GITHUB_TOKEN=$GITHUB_TOKEN
+echo GITHUB_REPO_DIR=$GITHUB_REPO_DIR
+echo PER_PAGE=$PER_PAGE
+echo PUSH_DELAY=$PUSH_DELAY
+
 
 rm -f result_*.json
-rm -f pushed.json # repo_names.txt
+rm -f pushed.json description.json
 
 
 for (( page=1; ;page++ ))
@@ -22,15 +29,20 @@ do
     fi
 done
 
-echo "prepare pushed.json"
-# jq -s -r 'add | .[] | select(.fork == false) | .full_name' result_*.json > repo_names.txt
+echo "prepare data"
 jq -s 'add | map( select(.fork == false) | {(.full_name): .pushed_at | fromdate}) | add' result_*.json | tee pushed.json
-
+jq -s 'add | map( select(.fork == false) | {(.full_name): .description}) | add' result_*.json | tee description.json
 
 while read -r full_name
 do
     echo "====== $full_name ======"
     repo_dir="${GITHUB_REPO_DIR}/${full_name}.git"
+    origin_description="$(jq -r ".\"${full_name}\" | select(.)" description.json)"
+    if [[ "$origin_description" == "" ]];then
+        description="sync of 'https://github.com/${full_name}'"
+    else
+        description="sync of 'https://github.com/${full_name}': ${origin_description}"
+    fi
     if [[ -e "$repo_dir" ]];then
         echo "fetch $full_name"
         # shellcheck disable=SC2012
@@ -52,6 +64,9 @@ do
             fi
         fi
         popd
+        if grep -q "sync of 'https" "${repo_dir}/description";then
+            echo "$description" > "${repo_dir}/description"
+        fi
     else
         owner_dir="${GITHUB_REPO_DIR}/$(echo "$full_name" | cut -d '/' -f1)"
         echo "clone $full_name"
@@ -60,7 +75,7 @@ do
         git clone --bare "git@${GITHUB_DOMAIN}:${full_name}"
         popd
         if grep -q 'edit this file' "${repo_dir}/description";then
-            echo "sync of https://github.com/${full_name}" > "${repo_dir}/description"
+            echo "$description" > "${repo_dir}/description"
         fi
     fi
     echo "-------------------------------------------------------------------------------------------------"
