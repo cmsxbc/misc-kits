@@ -396,10 +396,24 @@ class Taxpayer:
     salary_tax_rate: SalaryTaxRate = field(default_factory=lambda: SalaryTaxRate.from_dict(DEFAULT_TAX))
     bonus_tax_rate: BonusTaxRate = field(default_factory=lambda: BonusTaxRate.from_dict(DEFAULT_TAX))
     start: Money = m('5000')
-    fund_base_limit: Money = m('28017')
-    insurance_base_limit: Money = m('28017')
     fund_rate: Rate = r('0.07')
     insurance_rate: Rate = r('0.105')
+    fund_base_limit: InitVar[tuple[Money, Money] | Money] = m("34188")
+    insurance_base_limit: InitVar[tuple[Money, Money] | Money] = m("34188")
+    fund_bl: tuple[Money, Money] = field(init=False)
+    insurance_bl: tuple[Money, Money] = field(init=False)
+
+    def __post_init__(self, fund_base_limit: tuple[Money, Money] | Money, insurance_base_limit: tuple[Money, Money] | Money):
+        if isinstance(fund_base_limit, tuple):
+            self.fund_bl = tuple(fund_base_limit[:2])
+        else:
+            self.fund_bl = (fund_base_limit, fund_base_limit * r("1.1"))
+        assert len(self.fund_bl) == 2
+        if isinstance(insurance_base_limit, tuple):
+            self.insurance_bl = tuple(insurance_base_limit[:2])
+        else:
+            self.insurance_bl = (insurance_base_limit, insurance_base_limit * r("1.1"))
+        assert len(self.insurance_bl) == 2
 
     def calc_salaries(self, salaries: Union[List[Salary], YearlyPackage], additional_free: Money = m('0'),
                       force_fund_base: Money = m('inf'), force_insurance_base: Money = m('inf'), tax_klass=AccTax) -> Union[AccTax, YearlyTax]:
@@ -410,8 +424,9 @@ class Taxpayer:
         tax_table = iter(self.salary_tax_rate)
         cur_tax_step = next(tax_table)
         for idx, salary in enumerate(salaries):
-            fund_base = min(self.fund_base_limit, force_fund_base, salary)
-            insurance_base = min(self.insurance_base_limit, force_insurance_base, salary)
+            base_limit_idx = 0 if idx < 6 else 1
+            fund_base = min(self.fund_bl[base_limit_idx], force_fund_base, salary)
+            insurance_base = min(self.insurance_bl[base_limit_idx], force_insurance_base, salary)
             fund = fund_base * self.fund_rate
             insurance = insurance_base * self.insurance_rate
 
@@ -463,6 +478,7 @@ class Taxpayer:
                          force_insurance_base: Money = m('inf')) -> Dict[Bonus, YearlyTax]:
         base_yearly_tax = self.calc_salaries(package, additional_free, force_fund_base, force_insurance_base, tax_klass=YearlyTax)
         yearly_taxes = {}
+        as_bonus: None | Bonus
         for as_bonus in itertools.chain([None], package.bonuses):
             yearly_tax = deepcopy(base_yearly_tax)
             for bonus in package.bonuses:
@@ -486,7 +502,10 @@ class SalaryAction(argparse.Action):
             if len(salaries) > 11:
                 raise too_many_salaries_error
             if len(vs) == 1:
-                salaries.append(Salary(vs[0]))
+                if len(values) == 1:
+                    salaries = [Salary(vs[0])] * 12
+                else:
+                    salaries.append(Salary(vs[0]))
             elif len(vs) == 2:
                 salary = Salary(vs[0])
                 count = int(vs[1])
@@ -509,24 +528,46 @@ class DictAction(argparse.Action):
         setattr(namespace, self.dest, kw)
 
 
+def base_limit(param):
+    if "," in param:
+        return tuple(map(m, param.split(',')))
+    return m(param)
+
+
 def main():
     parser = argparse.ArgumentParser(description="A simple tools to calculate tax")
     parser.add_argument('salaries', metavar='Salary', nargs='+', action=SalaryAction)
     parser.add_argument('-b', '--bonus', metavar='Bonus', dest='bonuses', action='append', type=Bonus, default=[])
     parser.add_argument('-d', '--detail', action='store_true')
     parser.add_argument('-a', '--all', action='store_true')
+    parser.add_argument('--base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='Money|(Money, Money)')
+    parser.add_argument('--fund-base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='Money|(Money, Money)')
+    parser.add_argument('--insurance-base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='Money|(Money, Money)')
     parser.add_argument('--additional-free', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
+    parser.add_argument('--force-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
     parser.add_argument('--force-fund-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
     parser.add_argument('--force-insurance-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
     args = parser.parse_args()
+    if 'base_limit' in args.payer_args:
+        if 'fund_base_limit' in args.payer_args or 'insurance_base_limit' in args.payer_args:
+            raise argparse.ArgumentError(None, "Cannot use --base-limit with --*-base-limit")
+        args.payer_args['fund_base_limit'] = args.payer_args['base_limit']
+        args.payer_args['insurance_base_limit'] = args.payer_args['base_limit']
+        del args.payer_args['base_limit']
+    if 'force_base' in args.calc_args:
+        if 'force_fund_base' in args.calc_args or 'force_insurance_base' in  args.calc_args:
+            raise argparse.ArgumentError(None, "Cannot use --force-base with --force-*-base")
+        args.calc_args['force_fund_base'] = args.calc_args['force_base']
+        args.calc_args['force_insurance_base'] = args.calc_args['force_base']
+        del args.calc_args['force_base']
     if not args.bonuses:
         if args.all:
             raise ValueError('-a/--all only usable in calcuate package')
-        Taxpayer().calc_salaries(args.salaries, **args.calc_args).pretty(include_detail=args.detail)
+        Taxpayer(**args.payer_args).calc_salaries(args.salaries, **args.calc_args).pretty(include_detail=args.detail)
     else:
         yp = YearlyPackage.from_list(args.salaries, args.bonuses)
         if not args.all:
-            Taxpayer().calc_package(yp, **args.calc_args).pretty(include_detail=args.detail)
+            Taxpayer(**args.payer_args).calc_package(yp, **args.calc_args).pretty(include_detail=args.detail)
         else:
             for bonus, yearly_tax in Taxpayer().calc_all_package(yp, **args.calc_args).items():
                 if not args.detail:
