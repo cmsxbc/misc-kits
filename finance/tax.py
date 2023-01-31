@@ -175,6 +175,11 @@ DEFAULT_TAX = {
     m('inf'): r('0.45')
 }
 
+DEFAULT_BASE_LIMIT = m("34188")
+DEFAULT_START = m("5000")
+DEFAULT_FUND_RATE: Rate = r('0.07')
+DEFAULT_INSURANCE_RATE: Rate = r('0.105')
+
 
 @dataclass
 class TaxStepRate:
@@ -395,11 +400,11 @@ class YearlyTax(AccTax):
 class Taxpayer:
     salary_tax_rate: SalaryTaxRate = field(default_factory=lambda: SalaryTaxRate.from_dict(DEFAULT_TAX))
     bonus_tax_rate: BonusTaxRate = field(default_factory=lambda: BonusTaxRate.from_dict(DEFAULT_TAX))
-    start: Money = m('5000')
-    fund_rate: Rate = r('0.07')
-    insurance_rate: Rate = r('0.105')
-    fund_base_limit: InitVar[tuple[Money, Money] | Money] = m("34188")
-    insurance_base_limit: InitVar[tuple[Money, Money] | Money] = m("34188")
+    start: Money = DEFAULT_START
+    fund_rate: Rate = DEFAULT_FUND_RATE
+    insurance_rate: Rate = DEFAULT_INSURANCE_RATE
+    fund_base_limit: InitVar[tuple[Money, Money] | Money] = DEFAULT_BASE_LIMIT
+    insurance_base_limit: InitVar[tuple[Money, Money] | Money] = DEFAULT_BASE_LIMIT
     fund_bl: tuple[Money, Money] = field(init=False)
     insurance_bl: tuple[Money, Money] = field(init=False)
 
@@ -536,17 +541,24 @@ def base_limit(param):
 
 def main():
     parser = argparse.ArgumentParser(description="A simple tools to calculate tax")
-    parser.add_argument('salaries', metavar='Salary', nargs='+', action=SalaryAction)
+    parser.add_argument('salaries', metavar='Salary', nargs='+', action=SalaryAction, help="Money | Money:months, total months must be 12")
     parser.add_argument('-b', '--bonus', metavar='Bonus', dest='bonuses', action='append', type=Bonus, default=[])
     parser.add_argument('-d', '--detail', action='store_true')
     parser.add_argument('-a', '--all', action='store_true')
-    parser.add_argument('--base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='Money|(Money, Money)')
-    parser.add_argument('--fund-base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='Money|(Money, Money)')
-    parser.add_argument('--insurance-base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='Money|(Money, Money)')
-    parser.add_argument('--additional-free', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
-    parser.add_argument('--force-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
-    parser.add_argument('--force-fund-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
-    parser.add_argument('--force-insurance-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
+    payer_group = parser.add_argument_group("payer config")
+    payer_group.add_argument('--start', dest='payer_args', action=DictAction, default={}, type=m, metavar='Money', help=f'default={DEFAULT_START}, tax start bound')
+    payer_group.add_argument('--fund-rate', dest='payer_args', action=DictAction, default={}, type=r, metavar='Rate', help=f'default={DEFAULT_FUND_RATE}')
+    payer_group.add_argument('--insurance-rate', dest='payer_args', action=DictAction, default={}, type=r, metavar='Rate', help=f'default={DEFAULT_INSURANCE_RATE}')
+    limit_group = parser.add_argument_group("base limit (part of payer config)")
+    limit_group.add_argument('--base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={DEFAULT_BASE_LIMIT}, conflict with --*-base-limit')
+    limit_group.add_argument('--fund-base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={DEFAULT_BASE_LIMIT}, conflict with --base-limit')
+    limit_group.add_argument('--insurance-base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={DEFAULT_BASE_LIMIT}, conflict with --base-limit')
+    calc_group = parser.add_argument_group("calc config")
+    calc_group.add_argument('--additional-free', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
+    force_base_group = parser.add_argument_group("force base (part of calc config)")
+    force_base_group.add_argument('--force-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money', help="conflict with --force-*-base")
+    force_base_group.add_argument('--force-fund-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money', help="conflict with --force-base")
+    force_base_group.add_argument('--force-insurance-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money', help="conflict with --force-base")
     args = parser.parse_args()
     if 'base_limit' in args.payer_args:
         if 'fund_base_limit' in args.payer_args or 'insurance_base_limit' in args.payer_args:
