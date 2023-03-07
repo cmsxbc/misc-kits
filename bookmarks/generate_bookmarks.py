@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import sqlite3
 import sys
 import os.path
 import argparse
@@ -284,70 +286,6 @@ def escape_element(value):
     return value
 
 
-def render_as_html(folder: Folder, paths: list[str] = None, include_icon=True) -> str:
-    def _rec(x: Folder | Bookmark, d=0) -> str:
-        if isinstance(x, Folder):
-            return _df(x, d)
-        else:
-            return _db(x)
-
-    def _df(f: Folder, d=0) -> str:
-        children_html_list = list(filter(None, [_rec(child, d + 1) for child in f.children]))
-        if not paths or (paths and any(f.path.startswith(path) for path in paths)) or len(children_html_list) > 0:
-            if len(children_html_list) == 1:
-                return children_html_list[0]
-            indent1 = ' ' * 4 * d * 2
-            indent2 = ' ' * 4 * (d * 2 + 1)
-            children_html = f"</li>\n{indent2}<li>".join(children_html_list)
-            return f'<p>{escape_element(f.title)}:</p>\n{indent1}<ol><li>{children_html}</li>\n{indent1}</ol>'
-        return ''
-
-    def _db(b: Bookmark) -> str:
-        if paths and not any(b.path.startswith(path) for path in paths):
-            return ''
-        if include_icon:
-            icon = b.icon_uri if b.icon_uri.startswith('data:image/') else get_svg_uri(b)
-        else:
-            icon = ''
-        icon_html = '' if not icon else f'<img src="{icon}" width="32" height="32" />'
-        return (
-            '<div class="bookmark">'
-            f'<a href="{escape_attr_url(b.uri)}" referrerpolicy="no-referrer" target="_blank">'
-            f'{icon_html}<p>{escape_element(b.title)}</p>'
-            '</a></div>'
-        )
-
-    return f"""
-<html lang="zh-CN">
-    <head>
-        <meta charset="UTF-8" />
-        <title>Bookmarks</title>
-        <style>
-        ol {{
-            counter-reset: section;
-            list-style-type: none;
-        }}
-        .bookmark::before {{
-            counter-increment: section;
-            content: counters(section, ".", decimal-leading-zero) ". ";
-            padding-right: .5rem;
-            display:inline-block;
-        }}
-        .bookmark img,p {{
-            display: inline-block;
-            vertical-align: middle;
-        }}
-        .bookmark p {{
-            text-indent: .6rem;
-        }}
-        </style>
-    </head>
-    <body>
-        {_rec(folder)}
-    </body>
-</html>"""
-
-
 def convert2list_with_tags(folder: Folder, paths: list[str]) -> typing.Tuple[list[Bookmark], dict[str, int]]:
     bookmarks = []
     tags = collections.defaultdict(lambda: 0)
@@ -381,8 +319,11 @@ def convert2list_with_tags(folder: Folder, paths: list[str]) -> typing.Tuple[lis
     return bookmarks, tags
 
 
-def render_as_html_with_tags(folder: Folder, paths: list[str] = None) -> str:
-    bookmarks, tags = convert2list_with_tags(folder, paths)
+def render(bookmarks: list[Bookmark]) -> str:
+    tags = collections.defaultdict(lambda: 0)
+    for b in bookmarks:
+        for t in b.tags:
+            tags[t] += 1
 
     def _loop_tags():
         return ''.join(f'<div class="tag" data-name="{escape_element(n)}"><span>{escape_element(n)}</span><span>{c}</span></div>' for n, c in tags.items())
@@ -544,6 +485,30 @@ def get_chrome():
     return get_chromium('google-chrome')
 
 
+def save_bookmarks2sqlite(bookmarks: list[Bookmark], db):
+    conn = sqlite3.connect(db)
+    bookmark_tuples = [(b.title, b.uri, b.icon_uri, ";".join(b.tags)) for b in bookmarks]
+    with conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS bookmarks(title, uri, icon_uri, tags)")
+        conn.executemany("INSERT INTO bookmarks VALUES (?,?,?,?)", bookmark_tuples)
+    conn.close()
+
+
+def load_bookmarks_from_sqlite(db) -> list[Bookmark]:
+    conn = sqlite3.connect(db)
+    bookmarks = [
+        Bookmark(
+            title=row[0],
+            uri=row[1],
+            parent='',
+            icon_uri=row[2],
+            tags=row[3].split(';')
+        ) for row in conn.execute("SELECT * FROM bookmarks")
+    ]
+    conn.close()
+    return bookmarks
+
+
 def main():
     browser_mapping = {
         'firefox': {
@@ -559,58 +524,62 @@ def main():
             'get_default': get_chromium
         }
     }
-    parser = argparse.ArgumentParser(description="render browser bookmarks as html", add_help=True)
-    parser.add_argument('-b', '--browser', dest='browser', required=True, choices=list(browser_mapping.keys()))
-    parser.add_argument('output_path', help='/path/for/the/generated/html/to/be/stored')
-    parser.add_argument('-i', dest='input_path', required=False, default=None,
-                        help='/path/to/bookmarks/file, if not supplied, the default (across the browser) will be used.')
-    parser.add_argument('-p', '--path-filter', metavar='PATH_FILTER', dest='path_filters', default=[], action='append',
-                        help='filter bookmarks by path, use "." to split parent and child. apply multiple times works as "OR"')
-    parser.add_argument('-P', '--path-as-tag', dest='path_as_tag', action='store_true', help='path components as tags')
-    parser.add_argument('--skip-empty', dest='skip_empty', action='store_true',
-                        help='skip empty folder')
-    icon_exclusive_group = parser.add_mutually_exclusive_group()
-    icon_exclusive_group.add_argument('--no-icon', dest='include_icon', action='store_false',
-                                      help='do not include icons in generated html')
-    icon_exclusive_group.add_argument('--icon-cache', dest='icon_cache_dir', default=None,
-                                      help='use the cache dir for icons')
-    parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
-    parser.add_argument('-v', '--verbose', action='count', default=0)
+    parser = argparse.ArgumentParser(add_help=True)
+    sub_parser = parser.add_subparsers(dest="action")
+    convert_parser = sub_parser.add_parser("convert")
+    convert_parser.add_argument('-b', '--browser', dest='browser', required=True, choices=list(browser_mapping.keys()))
+    convert_parser.add_argument('db', help='/path/to/db')
+    convert_parser.add_argument('-i', dest='input_path', required=False, default=None,
+                                help='/path/to/bookmarks/file, if not supplied, the default (across the browser) will be used.')
+    convert_parser.add_argument('-p', '--path-filter', metavar='PATH_FILTER', dest='path_filters', default=[], action='append',
+                                help='filter bookmarks by path, use "." to split parent and child. apply multiple times works as "OR"')
+    convert_parser.add_argument('--skip-empty', dest='skip_empty', action='store_true',
+                                help='skip empty folder')
+    convert_parser.add_argument('--icon-cache', dest='icon_cache_dir', default=None,
+                                help='use the cache dir for icons')
+    convert_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
+    convert_parser.add_argument('-v', '--verbose', action='count', default=0)
+
+    render_parser = sub_parser.add_parser("render")
+    render_parser.add_argument("db", help='/path/to/db')
+    render_parser.add_argument("output_path", help='/path/to/the/generate/html')
+    render_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
+    render_parser.add_argument('-v', '--verbose', action='count', default=0)
 
     args = parser.parse_args()
-
     logger.setLevel(logging.ERROR - 10 * args.verbose)
 
-    if args.input_path is None:
-        args.input_path = browser_mapping[args.browser]['get_default']()
-        logger.info('use default of %s: %s', args.browser, args.input_path)
+    if args.action == "convert":
+        if args.input_path is None:
+            args.input_path = browser_mapping[args.browser]['get_default']()
+            logger.info('use default of %s: %s', args.browser, args.input_path)
 
-    if not os.path.exists(args.input_path):
-        logger.error('%s does not exist!', args.input_path)
-        sys.exit(1)
-
-    if args.icon_cache_dir and not os.path.isdir(args.icon_cache_dir):
-        logger.error('%s is not a directory!', args.icon_cache_dir)
-        sys.exit(1)
-
-    if args.path_as_tag and not args.include_icon:
-        logger.error('must include icon when use path as tag')
-        sys.exit(1)
-
-    if os.path.exists(args.output_path):
-        logger.warning('%s exists!', args.output_path)
-        if not args.yes and input(f'Do you want to overwrite "{args.output_path}"?[Yy/Nn]').lower() != 'y':
+        if not os.path.exists(args.input_path):
+            logger.error('%s does not exist!', args.input_path)
             sys.exit(1)
 
-    with open(args.output_path, 'w+') as of:
+        if args.icon_cache_dir and not os.path.isdir(args.icon_cache_dir):
+            logger.error('%s is not a directory!', args.icon_cache_dir)
+            sys.exit(1)
+
+        if os.path.exists(args.db):
+            logger.warning('%s exists!', args.db)
+            if not args.yes and input(f'Do you want to append "{args.db}"?[Yy/Nn]').lower() != 'y':
+                sys.exit(1)
+
         folder = browser_mapping[args.browser]['loader'](args.input_path, args.skip_empty)
-        if args.include_icon:
-            get_all_icons(folder, args.path_filters, args.icon_cache_dir)
-        if args.path_as_tag:
-            html = render_as_html_with_tags(folder, args.path_filters)
-        else:
-            html = render_as_html(folder, args.path_filters, args.include_icon)
-        of.write(html)
+        get_all_icons(folder, args.path_filters, args.icon_cache_dir)
+        bookmarks, _ = convert2list_with_tags(folder, args.path_filters)
+        save_bookmarks2sqlite(bookmarks, args.db)
+    else:
+        if os.path.exists(args.output_path):
+            logger.warning('%s exists!', args.output_path)
+            if not args.yes and input(f'Do you want to overwrite "{args.output_path}"?[Yy/Nn]').lower() != 'y':
+                sys.exit(1)
+        with open(args.output_path, 'w+') as of:
+            bookmarks = load_bookmarks_from_sqlite(args.db)
+            html = render(bookmarks)
+            of.write(html)
 
 
 if __name__ == "__main__":
