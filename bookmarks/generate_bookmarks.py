@@ -414,17 +414,21 @@ def save_bookmarks2sqlite(bookmarks: list[Bookmark], db):
     conn.close()
 
 
+def row2bookmark(row):
+    return Bookmark(
+        title=row[0],
+        uri=row[1],
+        parent='',
+        icon_uri=row[2],
+        icon_data_uri=row[3],
+        tags=set(row[4].split(';'))
+    )
+
+
 def load_bookmarks_from_sqlite(db) -> list[Bookmark]:
     conn = sqlite3.connect(db)
     bookmarks = [
-        Bookmark(
-            title=row[0],
-            uri=row[1],
-            parent='',
-            icon_uri=row[2],
-            icon_data_uri=row[3],
-            tags=row[4].split(';')
-        ) for row in conn.execute("SELECT * FROM bookmarks")
+        row2bookmark(row) for row in conn.execute("SELECT * FROM bookmarks")
     ]
     conn.close()
     return bookmarks
@@ -464,6 +468,58 @@ def update_icon(args):
     conn.close()
 
 
+def query_bookmark(args):
+    conn = sqlite3.connect(args.db)
+    with conn:
+        if args.title:
+            cur = conn.execute("SELECT * FROM bookmarks WHERE title like ?", (f"%{args.title}%", ))
+        else:
+            cur = conn.execute("SELECT * FROM bookmarks WHERE uri like ?", (f"%{args.uri}%", ))
+        for idx, row in enumerate(cur):
+            print(f"========== Bookmark.{idx} ===========")
+            print(f"title={row[0]}, uri={row[1]}")
+            print(f"icon_uri={row[2]}, has_icon_data={bool(row[3])}")
+            print(f"tags:", "  ".join(row[4].split(";")))
+    conn.close()
+
+
+def modify_bookmark(args):
+    conn = sqlite3.connect(args.db)
+    key_an = "title" if args.title else "uri"
+    with conn:
+        cur = conn.execute(f"SELECT * FROM bookmarks WHERE {key_an}=?", (getattr(args, key_an),))
+        bookmarks = [row2bookmark(row) for row in cur]
+        assert len(bookmarks) == 1
+        updates = {}
+        if args.icon_uri:
+            for b in bookmarks:
+                b.icon_uri = args.icon_uri
+            get_all_icons(bookmarks)
+            if bookmarks[0].icon_updated:
+                updates['icon_data_uri'] = bookmarks[0].icon_data_uri
+                updates['icon_uri'] = args.icon_uri
+        if args.tags:
+            updates['tags'] = ';'.join(args.tags)
+        elif args.add_tags:
+            tags = bookmarks[0].tags
+            tags.update(args.add_tags)
+            updates['tags'] = ';'.join(tags)
+        elif args.remove_tags:
+            tags = bookmarks[0].tags
+            for tag in set(args.remove_tags):
+                tags.remove(tag)
+            updates['tags'] = ';'.join(tags)
+        if updates:
+            set_stat = ",".join(f"{k}=?" for k in updates.keys())
+            sql = f"UPDATE bookmarks SET {set_stat} WHERE {key_an}=?"
+            parameters = (*updates.values(), getattr(args, key_an))
+            logger.debug("sql=%s, parameters=%s", sql, parameters)
+            rowcount = conn.execute(sql, parameters).rowcount
+            print(rowcount, 'rows updated')
+        else:
+            print("nothing to update")
+
+
 def main():
     browser_mapping = {
         'firefox': {
@@ -501,12 +557,32 @@ def main():
     render_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
     render_parser.add_argument('-v', '--verbose', action='count', default=0)
 
+    query_parser = sub_parser.add_parser("query")
+    query_parser.add_argument("db", help='/path/to/db')
+    query_key_group = query_parser.add_mutually_exclusive_group(required=True)
+    query_key_group.add_argument("--title")
+    query_key_group.add_argument("--uri")
+    query_parser.add_argument('-v', '--verbose', action='count', default=0)
+
     add_parser = sub_parser.add_parser("add")
     add_parser.add_argument("db", help="/path/to/db")
     add_parser.add_argument("--title", help="title", required=True)
     add_parser.add_argument("--uri", help="uri", required=True)
     add_parser.add_argument("--tag", metavar='TAG', dest='tags', default=[], action='append', required=True)
     add_parser.add_argument('-v', '--verbose', action='count', default=0)
+
+    modify_parser = sub_parser.add_parser("modify")
+    modify_parser.add_argument("db", help="/path/to/db")
+    modify_parser.add_argument("-v", "--verbose", action='count', default=0)
+    modify_key_group = modify_parser.add_mutually_exclusive_group(required=True)
+    modify_key_group.add_argument("--title", help="title")
+    modify_key_group.add_argument("--uri", help="uri")
+    modify_value_group = modify_parser.add_argument_group()
+    modify_tag_group = modify_value_group.add_mutually_exclusive_group(required=True)
+    modify_tag_group.add_argument("--tag", metavar="TAG", dest='tags', default=[], action='append')
+    modify_tag_group.add_argument("--add-tag", metavar="TAG", dest='add_tags', default=[], action='append')
+    modify_tag_group.add_argument("--remove-tag", metavar="TAG", dest='remove_tags', default=[], action='append')
+    modify_value_group.add_argument("--icon-uri")
 
     update_icon_parser = sub_parser.add_parser("update-icon")
     update_icon_parser.add_argument("db", help="/path/to/db")
@@ -548,8 +624,12 @@ def main():
             bookmarks = load_bookmarks_from_sqlite(args.db)
             html = render(bookmarks)
             of.write(html)
+    elif args.action == "query":
+        query_bookmark(args)
     elif args.action == "add":
         add_bookmark(args)
+    elif args.action == "modify":
+        modify_bookmark(args)
     elif args.action == "update-icon":
         update_icon(args)
 
