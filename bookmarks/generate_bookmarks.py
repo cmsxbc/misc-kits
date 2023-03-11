@@ -35,6 +35,7 @@ class Bookmark:
     icon_data_uri: str = ''
 
     def __post_init__(self):
+        self.validate()
         if not self.icon_uri:
             self.icon_uri = '/favicon.ico'
         self.update_icon_uri()
@@ -42,6 +43,15 @@ class Bookmark:
     @property
     def path(self):
         return f'{self.parent}.{self.title}'
+
+    def validate(self):
+        uri_obj = urllib.parse.urlparse(self.uri)
+        if not uri_obj.netloc:
+            raise ValueError("lack of netloc")
+        if not uri_obj.scheme:
+            raise ValueError("lack of scheme")
+        if uri_obj.scheme not in ("https", "http"):
+            raise ValueError(f"Invalid {uri_obj.scheme=}")
 
     def update_icon_uri(self):
         res = urllib.parse.urlparse(self.icon_uri)
@@ -52,6 +62,9 @@ class Bookmark:
                     base_res.scheme, base_res.netloc, res.path, res.params, res.query, res.fragment))
             else:
                 self.icon_uri = urllib.parse.urljoin(self.uri, self.icon_uri)
+
+    def to_sqlite_tuple(self):
+        return self.title, self.uri, self.icon_uri, self.icon_data_uri, ";".join(self.tags)
 
 
 @dataclasses.dataclass
@@ -387,7 +400,7 @@ def get_chrome():
 
 def save_bookmarks2sqlite(bookmarks: list[Bookmark], db):
     conn = sqlite3.connect(db)
-    bookmark_tuples = [(b.title, b.uri, b.icon_uri, b.icon_data_uri, ";".join(b.tags)) for b in bookmarks]
+    bookmark_tuples = [b.to_sqlite_tuple() for b in bookmarks]
     with conn:
         conn.execute("CREATE TABLE IF NOT EXISTS bookmarks(title, uri, icon_uri, icon_data_uri, tags)")
         conn.executemany("INSERT INTO bookmarks VALUES (?,?,?,?,?)", bookmark_tuples)
@@ -408,6 +421,22 @@ def load_bookmarks_from_sqlite(db) -> list[Bookmark]:
     ]
     conn.close()
     return bookmarks
+
+
+def add_bookmark2sqlite(bookmark: Bookmark, db):
+    conn = sqlite3.connect(db)
+    with conn:
+        cur = conn.execute(f"SELECT * FROM bookmarks where uri=?", (bookmark.uri,))
+        if len(cur.fetchall()) > 0:
+            raise ValueError(f"Duplicate {bookmark.uri=}")
+        conn.execute("INSERT INTO bookmarks VALUES (?,?,?,?,?)", bookmark.to_sqlite_tuple())
+    conn.close()
+
+
+def add_bookmark(args):
+    bookmark = Bookmark(title=args.title, uri=args.uri, parent='', tags=args.tags)
+    get_all_icons(bookmark)
+    add_bookmark2sqlite(bookmark, args.db)
 
 
 def main():
@@ -447,6 +476,13 @@ def main():
     render_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
     render_parser.add_argument('-v', '--verbose', action='count', default=0)
 
+    add_parser = sub_parser.add_parser("add")
+    add_parser.add_argument("db", help="/path/to/db")
+    add_parser.add_argument("--title", help="title", required=True)
+    add_parser.add_argument("--uri", help="uri", required=True)
+    add_parser.add_argument("--tag", metavar='TAG', dest='tags', default=[], action='append', required=True)
+    add_parser.add_argument('-v', '--verbose', action='count', default=0)
+
     args = parser.parse_args()
     logger.setLevel(logging.ERROR - 10 * args.verbose)
 
@@ -472,7 +508,7 @@ def main():
         get_all_icons(folder, args.path_filters, args.icon_cache_dir)
         bookmarks, _ = convert2list_with_tags(folder, args.path_filters)
         save_bookmarks2sqlite(bookmarks, args.db)
-    else:
+    elif args.action == "render":
         if os.path.exists(args.output_path):
             logger.warning('%s exists!', args.output_path)
             if not args.yes and input(f'Do you want to overwrite "{args.output_path}"?[Yy/Nn]').lower() != 'y':
@@ -481,6 +517,8 @@ def main():
             bookmarks = load_bookmarks_from_sqlite(args.db)
             html = render(bookmarks)
             of.write(html)
+    elif args.action == "add":
+        add_bookmark(args)
 
 
 HTML_TMPL = '''<html lang="zh-CN">
@@ -589,7 +627,5 @@ HTML_TMPL = '''<html lang="zh-CN">
 </html>'''
 
 
-
 if __name__ == "__main__":
     main()
-
