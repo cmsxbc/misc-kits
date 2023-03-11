@@ -432,10 +432,15 @@ def load_bookmarks_from_sqlite(db) -> list[Bookmark]:
 
 def add_bookmark2sqlite(bookmark: Bookmark, db):
     conn = sqlite3.connect(db)
+
+    def _check_dup(an):
+        rows = conn.execute(f"SELECT * FROM bookmarks where {an}=?", (getattr(bookmark, an), )).fetchall()
+        if len(rows) > 0:
+            raise ValueError(f"Duplicate for {an}={getattr(bookmark, an)}")
+
     with conn:
-        cur = conn.execute(f"SELECT * FROM bookmarks where uri=?", (bookmark.uri,))
-        if len(cur.fetchall()) > 0:
-            raise ValueError(f"Duplicate {bookmark.uri=}")
+        _check_dup("title")
+        _check_dup("uri")
         conn.execute("INSERT INTO bookmarks VALUES (?,?,?,?,?)", bookmark.to_sqlite_tuple())
     conn.close()
 
