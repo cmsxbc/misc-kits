@@ -32,6 +32,7 @@ class Bookmark:
     created: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.now)
     icon_uri: str = '/favicon.ico'
     tags: typing.Set[str] = dataclasses.field(default_factory=set)
+    icon_data_uri: str = ''
 
     def __post_init__(self):
         if not self.icon_uri:
@@ -161,7 +162,7 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, ic
             if os.path.exists(cache_path):
                 logger.debug('use cache for %s: %s', b.icon_uri, cache_path)
                 with open(cache_path) as f:
-                    b.icon_uri = f.read()
+                    b.icon_data_uri = f.read()
                 return
         logger.debug('aio get: %s', b.icon_uri)
         async with session.get(b.icon_uri) as resp:
@@ -174,10 +175,10 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, ic
                 logger.warning('aio get finished: %s, but there is no data', b.icon_uri)
                 return ''
             logger.debug('aio get done: %s', b.icon_uri)
-            b.icon_uri = f'data:{img_type};base64,{data}'
+            b.icon_data_uri = f'data:{img_type};base64,{data}'
             if cache_path:
                 with open(cache_path, 'w+') as f:
-                    f.write(b.icon_uri)
+                    f.write(b.icon_data_uri)
         return True
 
     async def _get_icon_url():
@@ -325,129 +326,28 @@ def render(bookmarks: list[Bookmark]) -> str:
         for t in b.tags:
             tags[t] += 1
 
-    def _loop_tags():
-        return ''.join(f'<div class="tag" data-name="{escape_element(n)}"><span>{escape_element(n)}</span><span>{c}</span></div>' for n, c in tags.items())
+    def _(b):
+        icon = b.icon_data_uri if b.icon_data_uri else get_svg_uri(b)
+        icon_html = f'<img src="{icon}" width="32" height="32" />'
 
-    def _loop_bookmarks():
-        def _(b):
-            icon = b.icon_uri if b.icon_uri.startswith('data:image/') else get_svg_uri(b)
-            icon_html = f'<img src="{icon}" width="32" height="32" />'
+        tags_html = ''.join(f'<div class="tag" data-name="{escape_element(tag)}">{escape_element(tag)}</div>' for tag in b.tags)
 
-            tags_html = ''.join(f'<div class="tag" data-name="{escape_element(tag)}">{escape_element(tag)}</div>' for tag in b.tags)
+        return (
+            '<div class="bookmark">'
+            f'<a href="{escape_attr_url(b.uri)}" referrerpolicy="no-referrer" target="_blank">'
+            f'{icon_html}<p>{escape_element(b.title)}</p></a>'
+            f'<div class="tags">{tags_html}</div>'
+            '</div>'
+        )
 
-            return (
-                '<div class="bookmark">'
-                f'<a href="{escape_attr_url(b.uri)}" referrerpolicy="no-referrer" target="_blank">'
-                f'{icon_html}<p>{escape_element(b.title)}</p></a>'
-                f'<div class="tags">{tags_html}</div>'
-                '</div>'
-            )
-        return ''.join(_(b) for b in bookmarks)
+    context = {
+        'tags': ''.join(
+            f'<div class="tag" data-name="{escape_element(n)}"><span>{escape_element(n)}</span><span>{c}</span></div>'
+            for n, c in tags.items()),
+        'bookmarks': ''.join(_(b) for b in bookmarks)
+    }
 
-    return '''<html lang="zh-CN">
-    <head>
-        <meta charset="UTF-8" />
-        <title>Bookmarks</title>
-        <style>
-            .tags {
-                display: flex;
-                flex-wrap: wrap;
-                justify-content: center;
-                gap: 1vw;
-            }
-            .tags > .tag {
-                background: #a3d2ff;
-            }
-            .tag.active {
-                background: #ffa3d2;
-            }
-            .tag > span + span::before {
-                content: "(";
-            }
-            .tag > span + span::after {
-                content: ")";
-            }
-            .bookmarks {
-                margin-top: 3vh;
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-                grid-gap: 1vw;
-            }
-            .bookmark {
-                grid-auto-rows: max-content;
-                display: grid;
-                grid-template-columns: 64px 1fr;
-            }
-            .bookmark.inactive {
-                display: none;
-            }
-            .bookmark > a {
-                grid-column: 1 / 3;
-                grid-row: 1 / 3;
-            }
-            .bookmark .tags {
-                justify-content: left;
-                grid-column: 2;
-                grid-row: 1;
-            }
-            .bookmark p {
-                word-wrap: anywhere;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="tags nav">
-''' + _loop_tags() + '''
-        </div>
-        <div class="bookmarks">
-''' + _loop_bookmarks() + '''
-        </div>
-    <script>
-        var tag_clicked = false;
-        function clickTag(e) {
-            if (tag_clicked) {
-                return;
-            }
-            tag_clicked = true;
-            let ele = e.target;
-            while (!ele.dataset.hasOwnProperty('name')) {
-                ele = ele.parentElement;
-            }
-            let tag = ele.dataset.name;
-            let activate = !ele.classList.contains('active');
-            for (let other_tag_e of document.querySelectorAll('.nav .tag')) {
-                other_tag_e.classList.remove('active');
-                if (activate && other_tag_e.dataset.name == tag) {
-                    other_tag_e.classList.add('active');
-                }
-            }
-            if (activate) {
-                ele.classList.add('active');
-            }
-            for (let bookmark of document.querySelectorAll('.bookmark')) {
-                let active_bookmark_tag = bookmark.querySelector(`[data-name="${tag}"]`);
-                for (let bookmark_tag of bookmark.querySelectorAll('.tag')) {
-                    bookmark_tag.classList.remove('active');
-                }
-                if (!activate) {
-                    bookmark.classList.remove('inactive');
-                } else if (active_bookmark_tag) {
-                    active_bookmark_tag.classList.add('active');
-                    bookmark.classList.remove('inactive');
-                } else {
-                    bookmark.classList.add('inactive');
-                }
-            }
-            tag_clicked = false;
-        };
-        (function () {
-            for (let e of document.querySelectorAll('.tag')) {
-                e.addEventListener('click', clickTag);
-            }
-        })();
-    </script>
-    </body>
-</html>'''
+    return re.sub(r'\{%\s*(\w+)\s*%}', lambda m: context[m.group(1)], HTML_TMPL)
 
 
 def get_latest_firefox() -> typing.Optional[str]:
@@ -487,10 +387,10 @@ def get_chrome():
 
 def save_bookmarks2sqlite(bookmarks: list[Bookmark], db):
     conn = sqlite3.connect(db)
-    bookmark_tuples = [(b.title, b.uri, b.icon_uri, ";".join(b.tags)) for b in bookmarks]
+    bookmark_tuples = [(b.title, b.uri, b.icon_uri, b.icon_data_uri, ";".join(b.tags)) for b in bookmarks]
     with conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS bookmarks(title, uri, icon_uri, tags)")
-        conn.executemany("INSERT INTO bookmarks VALUES (?,?,?,?)", bookmark_tuples)
+        conn.execute("CREATE TABLE IF NOT EXISTS bookmarks(title, uri, icon_uri, icon_data_uri, tags)")
+        conn.executemany("INSERT INTO bookmarks VALUES (?,?,?,?,?)", bookmark_tuples)
     conn.close()
 
 
@@ -502,7 +402,8 @@ def load_bookmarks_from_sqlite(db) -> list[Bookmark]:
             uri=row[1],
             parent='',
             icon_uri=row[2],
-            tags=row[3].split(';')
+            icon_data_uri=row[3],
+            tags=row[4].split(';')
         ) for row in conn.execute("SELECT * FROM bookmarks")
     ]
     conn.close()
@@ -582,5 +483,113 @@ def main():
             of.write(html)
 
 
+HTML_TMPL = '''<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Bookmarks</title>
+        <style>
+            .tags {
+                display: flex;
+                flex-wrap: wrap;
+                justify-content: center;
+                gap: 1vw;
+            }
+            .tags > .tag {
+                background: #a3d2ff;
+            }
+            .tag.active {
+                background: #ffa3d2;
+            }
+            .tag > span + span::before {
+                content: "(";
+            }
+            .tag > span + span::after {
+                content: ")";
+            }
+            .bookmarks {
+                margin-top: 3vh;
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+                grid-gap: 1vw;
+            }
+            .bookmark {
+                grid-auto-rows: max-content;
+                display: grid;
+                grid-template-columns: 64px 1fr;
+            }
+            .bookmark.inactive {
+                display: none;
+            }
+            .bookmark > a {
+                grid-column: 1 / 3;
+                grid-row: 1 / 3;
+            }
+            .bookmark .tags {
+                justify-content: left;
+                grid-column: 2;
+                grid-row: 1;
+            }
+            .bookmark p {
+                word-wrap: anywhere;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="tags nav">
+        {% tags %}
+        </div>
+        <div class="bookmarks">
+        {% bookmarks %}
+        </div>
+    <script>
+        var tag_clicked = false;
+        function clickTag(e) {
+            if (tag_clicked) {
+                return;
+            }
+            tag_clicked = true;
+            let ele = e.target;
+            while (!ele.dataset.hasOwnProperty('name')) {
+                ele = ele.parentElement;
+            }
+            let tag = ele.dataset.name;
+            let activate = !ele.classList.contains('active');
+            for (let other_tag_e of document.querySelectorAll('.nav .tag')) {
+                other_tag_e.classList.remove('active');
+                if (activate && other_tag_e.dataset.name == tag) {
+                    other_tag_e.classList.add('active');
+                }
+            }
+            if (activate) {
+                ele.classList.add('active');
+            }
+            for (let bookmark of document.querySelectorAll('.bookmark')) {
+                let active_bookmark_tag = bookmark.querySelector(`[data-name="${tag}"]`);
+                for (let bookmark_tag of bookmark.querySelectorAll('.tag')) {
+                    bookmark_tag.classList.remove('active');
+                }
+                if (!activate) {
+                    bookmark.classList.remove('inactive');
+                } else if (active_bookmark_tag) {
+                    active_bookmark_tag.classList.add('active');
+                    bookmark.classList.remove('inactive');
+                } else {
+                    bookmark.classList.add('inactive');
+                }
+            }
+            tag_clicked = false;
+        };
+        (function () {
+            for (let e of document.querySelectorAll('.tag')) {
+                e.addEventListener('click', clickTag);
+            }
+        })();
+    </script>
+    </body>
+</html>'''
+
+
+
 if __name__ == "__main__":
     main()
+
