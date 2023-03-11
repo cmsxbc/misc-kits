@@ -33,6 +33,7 @@ class Bookmark:
     icon_uri: str = '/favicon.ico'
     tags: typing.Set[str] = dataclasses.field(default_factory=set)
     icon_data_uri: str = ''
+    icon_updated: bool = dataclasses.field(init=False, default=False)
 
     def __post_init__(self):
         self.validate()
@@ -164,7 +165,8 @@ def load_chrome(filepath, skip_empty=False):
     )
 
 
-async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, icon_cache_dir: typing.Optional[str]):
+async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, icon_cache_dir: typing.Optional[str], force=False):
+    b.icon_updated = False
     if b.icon_uri.startswith('data:image/'):
         return
 
@@ -172,7 +174,7 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, ic
         cache_path = ''
         if icon_cache_dir:
             cache_path = os.path.join(icon_cache_dir, base64.b32encode(b.icon_uri.encode()).decode())
-            if os.path.exists(cache_path):
+            if not force and os.path.exists(cache_path):
                 logger.debug('use cache for %s: %s', b.icon_uri, cache_path)
                 with open(cache_path) as f:
                     b.icon_data_uri = f.read()
@@ -188,7 +190,9 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, ic
                 logger.warning('aio get finished: %s, but there is no data', b.icon_uri)
                 return ''
             logger.debug('aio get done: %s', b.icon_uri)
-            b.icon_data_uri = f'data:{img_type};base64,{data}'
+            new_icon_data_uri = f'data:{img_type};base64,{data}'
+            b.icon_updated = b.icon_data_uri != new_icon_data_uri
+            b.icon_data_uri = new_icon_data_uri
             if cache_path:
                 with open(cache_path, 'w+') as f:
                     f.write(b.icon_data_uri)
@@ -248,16 +252,19 @@ def get_svg_uri(b: Bookmark):
     return f'data:image/svg+xml;base64,{data}'
 
 
-def get_all_icons(folder, paths: list[str] = None, icon_cache_dir=None):
+def get_all_icons(folder, paths: list[str] = None, icon_cache_dir=None, force=False):
 
-    def _rec_icon(s: aiohttp.ClientSession, t: list, x: Folder | Bookmark):
-        if isinstance(x, Folder):
+    def _rec_icon(s: aiohttp.ClientSession, t: list, x: Folder | Bookmark | list[Bookmark]):
+        if isinstance(x, list):
+            for b in x:
+                _rec_icon(s, t, b)
+        elif isinstance(x, Folder):
             for child in x.children:
                 _rec_icon(s, t, child)
-            return
         elif paths and not any(x.path.startswith(path) for path in paths):
-            return
-        t.append(asyncio.ensure_future(bookmark_icon_uri2data(s, x, icon_cache_dir)))
+            pass
+        else:
+            t.append(asyncio.ensure_future(bookmark_icon_uri2data(s, x, icon_cache_dir, force)))
 
     async def _do():
         timeout = aiohttp.ClientTimeout(60, 10, 25)
@@ -439,6 +446,19 @@ def add_bookmark(args):
     add_bookmark2sqlite(bookmark, args.db)
 
 
+def update_icon(args):
+    bookmarks = load_bookmarks_from_sqlite(args.db)
+    get_all_icons(bookmarks, icon_cache_dir=args.icon_cache_dir, force=True)
+    conn = sqlite3.connect(args.db)
+    with conn:
+        for bookmark in bookmarks:
+            if not bookmark.icon_updated:
+                continue
+            logger.info(f"{bookmark.title}({bookmark.uri}) icon updated")
+            conn.execute("UPDATE bookmarks SET icon_data_uri=? WHERE uri =?", (bookmark.icon_data_uri, bookmark.uri))
+    conn.close()
+
+
 def main():
     browser_mapping = {
         'firefox': {
@@ -483,8 +503,14 @@ def main():
     add_parser.add_argument("--tag", metavar='TAG', dest='tags', default=[], action='append', required=True)
     add_parser.add_argument('-v', '--verbose', action='count', default=0)
 
+    update_icon_parser = sub_parser.add_parser("update-icon")
+    update_icon_parser.add_argument("db", help="/path/to/db")
+    update_icon_parser.add_argument('--icon-cache', dest='icon_cache_dir', default=None,
+                                    help='use the cache dir for icons')
+    update_icon_parser.add_argument('-v', '--verbose', action='count', default=0)
+
     args = parser.parse_args()
-    logger.setLevel(logging.ERROR - 10 * args.verbose)
+    logger.setLevel(max(logging.ERROR - 10 * args.verbose, logging.DEBUG))
 
     if args.action == "convert":
         if args.input_path is None:
@@ -519,6 +545,8 @@ def main():
             of.write(html)
     elif args.action == "add":
         add_bookmark(args)
+    elif args.action == "update-icon":
+        update_icon(args)
 
 
 HTML_TMPL = '''<html lang="zh-CN">
