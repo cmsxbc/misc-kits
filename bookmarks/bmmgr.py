@@ -220,22 +220,22 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, ic
             else:
                 logger.warning('cannot get icon link tag from %s', b.uri)
 
-    async def _retry(co, err_msg, retry_count):
+    async def _retry(func, err_msg, retry_count):
         while retry_count > 0:
             try:
-                return True, await co
+                return True, await func()
             except (aiohttp.ClientOSError, aiohttp.ServerTimeoutError, asyncio.exceptions.TimeoutError) as e:
                 retry_count -= 1
                 logger.warning('while %s catch exception: %s, remain retry: %d', err_msg, e, retry_count)
         return False, None
 
     try:
-        if all(await _retry(_get(), b.icon_uri, 3)):
+        if all(await _retry(_get, b.icon_uri, 3)):
             return
-        if not all(await _retry(_get_icon_url(), b.uri, 3)):
+        if not all(await _retry(_get_icon_url, b.uri, 3)):
             logger.warning('failed to retrieve icon from page for %s(%s)', b.title, b.uri)
             return
-        await _retry(_get(), b.icon_uri, 3)
+        await _retry(_get, b.icon_uri, 3)
     except Exception as e:
         logger.error('while fetch %s catch exception: %s', b.icon_uri, e)
         return
