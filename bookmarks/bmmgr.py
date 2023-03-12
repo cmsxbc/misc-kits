@@ -490,6 +490,33 @@ def add_bookmark(args):
     add_bookmark2sqlite(bookmark, args.db)
 
 
+def print_bookmarks(cur: sqlite3.Cursor | list[tuple[str, str, str, str, str]]):
+    for idx, row in enumerate(cur):
+        print(f"========== Bookmark.{idx} ===========")
+        print(f"title={row[0]}, uri={row[1]}")
+        print(f"icon_uri={row[2]}, has_icon_data={bool(row[3])}")
+        print(f"tags:", "  ".join(row[4].split(";")))
+
+
+def remove_bookmark(args):
+    conn = sqlite3.connect(args.db)
+    key_an = "title" if args.title else "uri"
+    with conn:
+        cur = conn.execute(f"SELECT * FROM bookmarks WHERE {key_an}=?", (getattr(args, key_an),))
+        bookmarks = cur.fetchall()
+        if len(bookmarks) < 1:
+            print('Nothing to remove')
+        else:
+            print_bookmarks(bookmarks)
+            print("=" * 80)
+            if not args.yes and input(f'Do you want to remove?[Yy/Nn]').lower() != 'y':
+                print("Won't remove")
+            else:
+                cur = conn.execute(f"DELETE FROM bookmarks WHERE {key_an}=?", (getattr(args, key_an),))
+                print(cur.rowcount, 'deleted')
+    conn.close()
+
+
 def update_icon(args):
     bookmarks = load_bookmarks_from_sqlite(args.db)
     get_all_info(bookmarks, icon_cache_dir=args.icon_cache_dir, force=True)
@@ -510,11 +537,7 @@ def query_bookmark(args):
             cur = conn.execute("SELECT * FROM bookmarks WHERE title like ?", (f"%{args.title}%", ))
         else:
             cur = conn.execute("SELECT * FROM bookmarks WHERE uri like ?", (f"%{args.uri}%", ))
-        for idx, row in enumerate(cur):
-            print(f"========== Bookmark.{idx} ===========")
-            print(f"title={row[0]}, uri={row[1]}")
-            print(f"icon_uri={row[2]}, has_icon_data={bool(row[3])}")
-            print(f"tags:", "  ".join(row[4].split(";")))
+        print_bookmarks(cur)
     conn.close()
 
 
@@ -606,6 +629,14 @@ def main():
     add_parser.add_argument("--tag", metavar='TAG', dest='tags', default=[], action='append', required=True)
     add_parser.add_argument('-v', '--verbose', action='count', default=0)
 
+    remove_parser = sub_parser.add_parser("remove")
+    remove_parser.add_argument("db", help="/path/to/db")
+    remove_key_group = remove_parser.add_mutually_exclusive_group(required=True)
+    remove_key_group.add_argument("--title", help="title")
+    remove_key_group.add_argument("--uri", help="uri")
+    remove_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
+    remove_parser.add_argument('-v', '--verbose', action='count', default=0)
+
     modify_parser = sub_parser.add_parser("modify")
     modify_parser.add_argument("db", help="/path/to/db")
     modify_parser.add_argument("-v", "--verbose", action='count', default=0)
@@ -663,6 +694,8 @@ def main():
         query_bookmark(args)
     elif args.action == "add":
         add_bookmark(args)
+    elif args.action == "remove":
+        remove_bookmark(args)
     elif args.action == "modify":
         modify_bookmark(args)
     elif args.action == "update-icon":
