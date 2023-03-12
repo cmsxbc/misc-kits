@@ -186,10 +186,12 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, ic
             if resp.status != 200:
                 return
             img_type = resp.headers.get('Content-Type')
+            if not img_type.startswith("image"):
+                return
             data = base64.b64encode(data).decode()
             if not data:
                 logger.warning('aio get finished: %s, but there is no data', b.icon_uri)
-                return ''
+                return
             logger.debug('aio get done: %s', b.icon_uri)
             new_icon_data_uri = f'data:{img_type};base64,{data}'
             b.icon_updated = b.icon_data_uri != new_icon_data_uri
