@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import sqlite3
 import sys
 import os.path
@@ -205,7 +206,7 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, ic
             if resp.status != 200:
                 logger.warning('cannot fetch data from %s, got http code: %d', b.uri, resp.status)
                 return
-            html = data.decode(resp.charset)
+            html = data.decode(resp.charset if resp.charset else "utf-8")
             if ml := re.search(r'<link\s+[^>]*rel=(?P<quote>[\'"]?)[^\'">]*icon[^\'"]*(?P=quote)[^>]*>', html):
                 logger.debug('link matched: %s', ml.group(0))
                 if m := re.search(r'href=(?P<quote>[\'"]?)(?P<url>[^\'"]*?)(?P=quote)(\s|>)', ml.group(0)):
@@ -237,6 +238,29 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, ic
         return
 
 
+async def get_bookmark_title(session: aiohttp.ClientSession, bookmark: Bookmark):
+    if bookmark.title:
+        return
+    logger.warning('try get title from page for %s', bookmark.uri)
+
+    async def _get():
+        async with session.get(bookmark.uri) as resp:
+            data = await resp.read()
+            if resp.status != 200:
+                logger.warning('cannot fetch data from %s, got http code: %d', bookmark.uri, resp.status)
+                return
+            html = data.decode(resp.charset if resp.charset else "utf-8")
+            if ml := re.search(r'<title>([^<]*)</title>', html, re.IGNORECASE|re.MULTILINE):
+                logger.debug('%s title matched: %s', bookmark.uri, ml.group(0))
+                bookmark.title = ml.group(1)
+            else:
+                logger.warning('cannot get title from %s', bookmark.uri)
+    try:
+        await _get()
+    except (aiohttp.ClientOSError, aiohttp.ServerTimeoutError, asyncio.exceptions.TimeoutError) as e:
+        logger.warning('while fetch %s catch exception: %s', bookmark.uri, e)
+
+
 def get_svg_uri(b: Bookmark):
     xml_lines = [
         ('<?xml version="1.0" standalone="no"?>'
@@ -252,25 +276,31 @@ def get_svg_uri(b: Bookmark):
     return f'data:image/svg+xml;base64,{data}'
 
 
-def get_all_icons(folder, paths: list[str] = None, icon_cache_dir=None, force=False):
+def get_all_info(folder, paths: list[str] = None, icon_cache_dir=None, get_title=False, force=False):
 
-    def _rec_icon(s: aiohttp.ClientSession, t: list, x: Folder | Bookmark | list[Bookmark]):
+    _funcs = [
+        functools.partial(bookmark_icon_uri2data, icon_cache_dir=icon_cache_dir, force=force)
+    ]
+    if get_title:
+        _funcs.append(get_bookmark_title)
+
+    def _rec(s: aiohttp.ClientSession, t: list, x: Folder | Bookmark | list[Bookmark], funcs: list[typing.Callable[[aiohttp.ClientSession, Bookmark], typing.Coroutine]]):
         if isinstance(x, list):
             for b in x:
-                _rec_icon(s, t, b)
+                _rec(s, t, b, funcs)
         elif isinstance(x, Folder):
             for child in x.children:
-                _rec_icon(s, t, child)
+                _rec(s, t, child, funcs)
         elif paths and not any(x.path.startswith(path) for path in paths):
             pass
         else:
-            t.append(asyncio.ensure_future(bookmark_icon_uri2data(s, x, icon_cache_dir, force)))
+            t.extend(asyncio.ensure_future(func(s, x)) for func in funcs)
 
     async def _do():
         timeout = aiohttp.ClientTimeout(60, 10, 25)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             tasks = []
-            _rec_icon(session, tasks, folder)
+            _rec(session, tasks, folder, _funcs)
             await asyncio.gather(*tasks)
 
     asyncio.run(_do())
@@ -451,13 +481,15 @@ def add_bookmark2sqlite(bookmark: Bookmark, db):
 
 def add_bookmark(args):
     bookmark = Bookmark(title=args.title, uri=args.uri, parent='', tags=args.tags)
-    get_all_icons(bookmark)
+    get_all_info(bookmark, get_title=True)
+    if not bookmark.title:
+        bookmark.title = bookmark.uri
     add_bookmark2sqlite(bookmark, args.db)
 
 
 def update_icon(args):
     bookmarks = load_bookmarks_from_sqlite(args.db)
-    get_all_icons(bookmarks, icon_cache_dir=args.icon_cache_dir, force=True)
+    get_all_info(bookmarks, icon_cache_dir=args.icon_cache_dir, force=True)
     conn = sqlite3.connect(args.db)
     with conn:
         for bookmark in bookmarks:
@@ -494,7 +526,7 @@ def modify_bookmark(args):
         if args.icon_uri:
             for b in bookmarks:
                 b.icon_uri = args.icon_uri
-            get_all_icons(bookmarks)
+            get_all_info(bookmarks)
             if bookmarks[0].icon_updated:
                 updates['icon_data_uri'] = bookmarks[0].icon_data_uri
                 updates['icon_uri'] = args.icon_uri
@@ -566,7 +598,7 @@ def main():
 
     add_parser = sub_parser.add_parser("add")
     add_parser.add_argument("db", help="/path/to/db")
-    add_parser.add_argument("--title", help="title", required=True)
+    add_parser.add_argument("--title", help="title", required=False)
     add_parser.add_argument("--uri", help="uri", required=True)
     add_parser.add_argument("--tag", metavar='TAG', dest='tags', default=[], action='append', required=True)
     add_parser.add_argument('-v', '--verbose', action='count', default=0)
@@ -612,7 +644,7 @@ def main():
                 sys.exit(1)
 
         folder = browser_mapping[args.browser]['loader'](args.input_path, args.skip_empty)
-        get_all_icons(folder, args.path_filters, args.icon_cache_dir)
+        get_all_info(folder, args.path_filters, args.icon_cache_dir)
         bookmarks, _ = convert2list_with_tags(folder, args.path_filters)
         save_bookmarks2sqlite(bookmarks, args.db)
     elif args.action == "render":
