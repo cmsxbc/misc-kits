@@ -21,10 +21,11 @@ class Repo:
     name: str
     user: str
     host: str
+    sub_path: str = ''
 
 
 def clone(repo: Repo):
-    dirpath = os.path.join(repo.host, repo.user)
+    dirpath = os.path.join(repo.host, repo.sub_path, repo.user) if repo.sub_path else os.path.join(repo.host, repo.user)
     os.makedirs(dirpath, mode=0o700, exist_ok=True)
     if os.path.exists(os.path.join(dirpath, repo.name)):
         raise ValueError(f'Seem duplicate {repo.uri}')
@@ -37,7 +38,7 @@ def clone(repo: Repo):
             break
 
 
-def parse(repo_uri: str) -> Repo:
+def parse(repo_uri: str, allow_sub_path: bool = False) -> Repo:
     r = urllib.parse.urlparse(repo_uri)
     if not r.path.endswith('.git') and not r.path.startswith('git@') and 'git' not in r.netloc:
         raise ValueError("Only support git yet")
@@ -46,13 +47,17 @@ def parse(repo_uri: str) -> Repo:
     if not r.scheme and not r.netloc:
         if not r.path.startswith('git@'):
             raise ValueError(f"Unsupported uri: {repo_uri}")
-        if m := re.fullmatch(r'git@(?P<host>[^/:]+):(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git|/)?', r.path):
-            return Repo(repo_uri, VCS.git, m.group('repo_name'), m.group('user_name'), m.group('host'))
+        if m := re.fullmatch(r'git@(?P<host>[^/:]+):(?P<sub_path>.+/)?(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git|/)?', r.path):
+            if m.group('sub_path') and not allow_sub_path:
+                raise ValueError(f"uri has sub_path({m.group('sub_path')}), but it's not allowed: {repo_uri}")
+            return Repo(repo_uri, VCS.git, m.group('repo_name'), m.group('user_name'), m.group('host'), m.group('sub_path'))
         else:
             raise ValueError(f"Unsupported uri: {repo_uri}")
     elif r.scheme == 'https':
-        if m := re.fullmatch(r'/(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git|/)?', r.path):
-            return Repo(repo_uri, VCS.git, m.group('repo_name'), m.group('user_name'), r.netloc)
+        if m := re.fullmatch(r'(/(?P<sub_path>.+))?/(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git|/)?', r.path):
+            if m.group('sub_path') and not allow_sub_path:
+                raise ValueError(f"uri has sub_path({m.group('sub_path')}), but it's not allowed: {repo_uri}")
+            return Repo(repo_uri, VCS.git, m.group('repo_name'), m.group('user_name'), r.netloc, m.group('sub_path'))
         else:
             raise ValueError(f"Unsupported uri: {repo_uri}")
     else:
@@ -106,13 +111,16 @@ def update_all(max_depth=3):
 
 
 def print_usage():
-    print(sys.argv[0], '[[clone] | move ] repo_uri|path')
+    print(sys.argv[0], '[ [clone] [--allow-sub-path] | move ] repo_uri|path')
 
 
 if __name__ == '__main__':
     match sys.argv[1:]:
         case ('update-all' | 'update_all', ):
             update_all()
+        case ('--allow-sub-path', str(repo_uri)) | ('clone', '--allow-sub-path', str(repo_uri)):
+            repo = parse(repo_uri, True)
+            clone(repo)
         case [str(repo_uri)] | ('clone', str(repo_uri)):
             repo = parse(repo_uri)
             clone(repo)
