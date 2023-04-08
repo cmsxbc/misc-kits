@@ -202,6 +202,16 @@ def get_upload_folder():
     return folder
 
 
+def link_latest_folder():
+    folder = os.path.join(app.config['UPLOAD_FOLDER'], datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d'))
+    latest_folder = os.path.join(app.config['UPLOAD_FOLDER'], "latest")
+    if os.path.islink(latest_folder) and os.path.realpath(latest_folder) == os.path.realpath(folder):
+        return
+    if os.path.lexists(latest_folder):
+        os.unlink(latest_folder)
+    os.symlink(os.path.relpath(folder, os.path.dirname(latest_folder)), latest_folder)  # ,target_is_directory=True)
+
+
 def save_a_file(f):
     if f and f.filename:
         buffer = f.stream.read()
@@ -249,6 +259,8 @@ def upload_file():
                 uploaded_file_info_list.append(f'<div class="uploadeds failed"><div class="origin">{sname}</div><div class="reason">{sreason}</div></div>')
             else:
                 uploaded_file_info_list.append(f'<div class="uploadeds failed"><div class="origin">{sname}</div><div class="reason">{sreason} is forbidden</div></div>')
+        else:
+            link_latest_folder()
 
         uploaded_file_list = ''.join(uploaded_file_info_list)
     else:
