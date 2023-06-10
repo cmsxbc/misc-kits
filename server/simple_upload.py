@@ -8,6 +8,7 @@ from datetime import datetime
 import flask
 from flask import Flask, flash, request, redirect
 import mimetypes
+import markupsafe
 
 import magic
 
@@ -103,6 +104,13 @@ STYLE = """.hidden {
             width: 0;
             height: 0;
             opacity: 0;
+        }
+        .plaintext-container {
+            margin: 0 auto 1em auto;
+            font-size: 1vw;
+        }
+        .plaintext-container summary {
+            font-size: 2vw;
         }
         .preview li {
             display: flex;
@@ -219,49 +227,85 @@ def save_a_file(f):
         mime = magic.from_buffer(buffer, True)
         if mime not in ALLOWED_MIMES:
             return False, mime
-        filename = re.sub(r'\./\\\s', '_', f.filename)
-        filepath = os.path.join(get_upload_folder(), filename)
-        if os.path.exists(filepath):
-            upload_md5 = hashlib.md5(buffer)
-            with open(filepath, 'rb') as ef:
-                exist_md5 = hashlib.md5(ef.read())
-            if exist_md5.digest() == upload_md5.digest():
-                return True, "existed!!!!"
-            filename = f'{time.time()}-{filename}'
-            filepath = os.path.join(get_upload_folder(), filename)
-        f.save(filepath)
-        return True, filename
+        match deduplicate_file(f.filename, buffer):
+            case (reason,):
+                return True, reason
+            case (filepath, filename):
+                f.save(filepath)
+                return True, filename
     return False, None
+
+
+def save_plaintext(content, title=""):
+    if title and not re.fullmatch(r"^[\w ]+$", title):
+        return False, "Invalid title"
+    elif not title:
+        title = f"plaintext_{int(time.time())}"
+    content = f"""
+<html lang="zh-CN">
+<title>{markupsafe.escape(title)}</title>
+<body>
+<pre>
+{markupsafe.escape(content)}
+</pre>
+</body>
+</html>
+""".encode()
+    match deduplicate_file(f"{title}.html", content):
+        case(reason, ):
+            return True, reason
+        case(filepath, filename):
+            with open(filepath, 'wb+') as f:
+                f.write(content)
+            return True, filename
+    return False, None
+
+
+def deduplicate_file(filename: str, content: bytes) -> str | tuple[str, str]:
+    filename = re.sub(r'\./\\\s', '_', filename)
+    filepath = os.path.join(get_upload_folder(), filename)
+    if os.path.exists(filepath):
+        upload_md5 = hashlib.md5(content)
+        with open(filepath, 'rb') as ef:
+            exist_md5 = hashlib.md5(ef.read())
+        if exist_md5.digest() == upload_md5.digest():
+            return "existed!!!!"
+        filename = f'{time.time()}-{filename}'
+        filepath = os.path.join(get_upload_folder(), filename)
+    return filepath, filename
 
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
     if request.method == 'POST':
-        # check if the post request has the file part
-        if 'files' not in request.files:
-            flash('No files part')
+        # check if the post request has data
+        if 'files' not in request.files and 'plaintext' not in request.form:
+            flash('Neither files nor plaintext')
             return redirect(request.url)
-        files = request.files.getlist('files')
-        if not files:
-            flash('No files part')
-            return redirect(request.url)
-        if len(files) == 1 and files[0].filename == '':
-            flash('No files part')
-            return redirect(request.url)
+        dealed_results = []
+        if 'files' in request.files and (files := request.files.getlist('files')):
+            if len(files) != 1 or files[0].filename != '':
+                for file in files:
+                    saved, reason = save_a_file(file)
+                    dealed_results.append((file.filename, saved, reason))
+        if 'plaintext' in request.form:
+            saved, reason = save_plaintext(request.form["plaintext"], request.form.get("title", ""))
+            dealed_results.append(("plaintext", saved, reason))
         uploaded_file_info_list = []
-        for file in files:
-            saved, reason = save_a_file(file)
-            sname = flask.escape(file.filename)
-            sreason = flask.escape(reason)
+        for name, saved, reason in dealed_results:
+            sname = markupsafe.escape(name)
+            sreason = markupsafe.escape(reason)
             if saved:
-                uploaded_file_info_list.append(f'<div class="uploadeds"><div class="origin">{sname}</div><div class="saved">{sreason}</div></div>')
+                uploaded_file_info_list.append(
+                    f'<div class="uploadeds"><div class="origin">{sname}</div><div class="saved">{sreason}</div></div>')
             elif reason is None:
-                uploaded_file_info_list.append(f'<div class="uploadeds failed"><div class="origin">{sname}</div><div class="reason">{sreason}</div></div>')
+                uploaded_file_info_list.append(
+                    f'<div class="uploadeds failed"><div class="origin">{sname}</div><div class="reason">{sreason}</div></div>')
             else:
-                uploaded_file_info_list.append(f'<div class="uploadeds failed"><div class="origin">{sname}</div><div class="reason">{sreason} is forbidden</div></div>')
-        else:
+                uploaded_file_info_list.append(
+                    f'<div class="uploadeds failed"><div class="origin">{sname}</div><div class="reason">{sreason} is forbidden</div></div>')
+        if uploaded_file_info_list:
             link_latest_folder()
-
         uploaded_file_list = ''.join(uploaded_file_info_list)
     else:
         uploaded_file_list = ''
@@ -293,7 +337,20 @@ def upload_file():
                 <div>
                     <label for="files" class="button">Choose</label>
                 </div>
-                <input type="file" id="files" name="files" multiple>
+                <input type="file" id="files" name="files" multiple />
+                <div class="plaintext-container">
+                    <details>
+                        <summary>Plain Text</summary>
+                        <div>
+                            <label for="title">Title</label>
+                            <input type="text" name="title" placeholder="title here, can be empty..." />
+                        </div>
+                        <div>
+                            <label for="plaintext">Content</label>
+                            <textarea id="plaintext" name="plaintext" rows="5" cols="128"></textarea>
+                        </div>
+                    </details>
+                </div>
                 <div class="preview" id="preview">
                 </div>
                 <div>
