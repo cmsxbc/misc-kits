@@ -282,17 +282,21 @@ def upload_file():
         if 'files' not in request.files and 'plaintext' not in request.form:
             flash('Neither files nor plaintext')
             return redirect(request.url)
-        dealed_results = []
+        dealt_results = []
         if 'files' in request.files and (files := request.files.getlist('files')):
             if len(files) != 1 or files[0].filename != '':
                 for file in files:
                     saved, reason = save_a_file(file)
-                    dealed_results.append((file.filename, saved, reason))
+                    dealt_results.append((file.filename, saved, reason))
         if 'plaintext' in request.form:
-            saved, reason = save_plaintext(request.form["plaintext"], request.form.get("title", ""))
-            dealed_results.append(("plaintext", saved, reason))
+            if request.form["plaintext"].strip():
+                saved, reason = save_plaintext(request.form["plaintext"], request.form.get("title", ""))
+                dealt_results.append(("plaintext", saved, reason))
+        if not dealt_results:
+            flash('Neither files nor plaintext')
+            return redirect(request.url)
         uploaded_file_info_list = []
-        for name, saved, reason in dealed_results:
+        for name, saved, reason in dealt_results:
             sname = markupsafe.escape(name)
             sreason = markupsafe.escape(reason)
             if saved:
