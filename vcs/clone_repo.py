@@ -55,7 +55,7 @@ def parse(repo_uri: str, allow_sub_path: bool = False) -> Repo:
             raise ValueError(f"Unsupported uri: {repo_uri}")
     elif r.scheme == 'https':
         if m := re.fullmatch(r'(/(?P<sub_path>.+))?/(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git|/)?', r.path):
-            if m.group('sub_path') and not allow_sub_path:
+            if m.group('sub_path') and not allow_sub_path and r.netloc != "gitlab.com":
                 raise ValueError(f"uri has sub_path({m.group('sub_path')}), but it's not allowed: {repo_uri}")
             return Repo(repo_uri, VCS.git, m.group('repo_name'), m.group('user_name'), r.netloc, m.group('sub_path'))
         else:
