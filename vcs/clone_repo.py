@@ -40,28 +40,30 @@ def clone(repo: Repo):
 
 def parse(repo_uri: str, allow_sub_path: bool = False) -> Repo:
     r = urllib.parse.urlparse(repo_uri)
-    if not r.path.endswith('.git') and not r.path.startswith('git@') and 'git' not in r.netloc:
-        raise ValueError("Only support git yet")
-    if r.params or r.query or r.fragment:
-        raise ValueError(f"Unsupported uri: {repo_uri}")
-    if not r.scheme and not r.netloc:
-        if not r.path.startswith('git@'):
-            raise ValueError(f"Unsupported uri: {repo_uri}")
-        if m := re.fullmatch(r'git@(?P<host>[^/:]+):(?P<sub_path>.+/)?(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git|/)?', r.path):
-            if m.group('sub_path') and not allow_sub_path:
-                raise ValueError(f"uri has sub_path({m.group('sub_path')}), but it's not allowed: {repo_uri}")
-            return Repo(repo_uri, VCS.git, m.group('repo_name'), m.group('user_name'), m.group('host'), m.group('sub_path'))
-        else:
-            raise ValueError(f"Unsupported uri: {repo_uri}")
-    elif r.scheme == 'https':
-        if m := re.fullmatch(r'(/(?P<sub_path>.+))?/(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git|/)?', r.path):
-            if m.group('sub_path') and not allow_sub_path and r.netloc != "gitlab.com":
-                raise ValueError(f"uri has sub_path({m.group('sub_path')}), but it's not allowed: {repo_uri}")
-            return Repo(repo_uri, VCS.git, m.group('repo_name'), m.group('user_name'), r.netloc, m.group('sub_path'))
-        else:
-            raise ValueError(f"Unsupported uri: {repo_uri}")
-    else:
-        raise ValueError(f"Unsupported uri: {repo_uri}")
+    p: str
+    match r:
+        case urllib.parse.ParseResult(params=params, query=query, fragment=fragment) if params or query or fragment:
+            raise ValueError(f"Nonsupport uri({repo_uri}) with params or query or fragment: {r=!r}")
+        case urllib.parse.ParseResult(scheme="", netloc="", path=p) if p.startswith("git@"):
+            if m := re.fullmatch(
+                    r'git@(?P<host>[^/:]+):(?P<sub_path>.+/)?(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git|/)?',
+                    p):
+                if m.group('sub_path') and not allow_sub_path:
+                    raise ValueError(f"uri has sub_path({m.group('sub_path')}), but it's not allowed: {repo_uri}")
+                return Repo(repo_uri, VCS.git, m.group('repo_name'), m.group('user_name'), m.group('host'),
+                            m.group('sub_path'))
+        case urllib.parse.ParseResult(scheme="", netloc="", path=p) if p:
+            if p.count('/') != 1:
+                raise ValueError(f"Unknown uri({repo_uri}) with only path: {p}")
+            user_name, repo_name = p.split("/")
+            return Repo(f"https://github.com/{user_name}/{repo_name}.git", VCS.git, repo_name, user_name, "github.com")
+        case urllib.parse.ParseResult(scheme="https", netloc=netloc, path=p) if netloc and (p.endswith(".git") or "git" in netloc):
+            netloc: str
+            if m := re.fullmatch(r'(/(?P<sub_path>.+))?/(?P<user_name>[^/]+)/(?P<repo_name>[^/]+?)(\.git|/)?', p):
+                if m.group('sub_path') and not allow_sub_path and r.netloc != "gitlab.com":
+                    raise ValueError(f"uri has sub_path({m.group('sub_path')}), but it's not allowed: {repo_uri}")
+                return Repo(repo_uri, VCS.git, m.group('repo_name'), m.group('user_name'), netloc, m.group('sub_path'))
+    raise ValueError(f"Unknown uri({repo_uri}): {r=!r}")
 
 
 def move(path: str):
