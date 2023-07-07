@@ -385,15 +385,15 @@ def render(bookmarks: list[Bookmark]) -> str:
 
     def _(b):
         icon = b.icon_data_uri if b.icon_data_uri else get_svg_uri(b)
-        icon_html = f'<img src="{icon}" width="32" height="32" />'
+        icon_html = f'<img src="{icon}" width="64" height="64" />'
 
         tags_html = ''.join(f'<div class="tag" data-name="{escape_element(tag)}">{escape_element(tag)}</div>' for tag in b.tags)
 
         return (
             '<div class="bookmark">'
-            f'<a href="{escape_attr_url(b.uri)}" referrerpolicy="no-referrer" target="_blank">'
-            f'{icon_html}<p>{escape_element(b.title)}</p></a>'
+            f'<div class="icon">{icon_html}</div>'
             f'<div class="tags">{tags_html}</div>'
+            f'<p><a href="{escape_attr_url(b.uri)}" referrerpolicy="no-referrer" target="_blank">{escape_element(b.title)}</a></p>'
             '</div>'
         )
 
@@ -719,6 +719,9 @@ HTML_TMPL = '''<html lang="zh-CN">
             }
             .tags > .tag {
                 background: #a3d2ff;
+                color: white;
+                padding: 0.2vw;
+                cursor: pointer;
             }
             .tag.active {
                 background: #ffa3d2;
@@ -739,21 +742,39 @@ HTML_TMPL = '''<html lang="zh-CN">
                 grid-auto-rows: max-content;
                 display: grid;
                 grid-template-columns: 64px 1fr;
+                gap: 1vw;
+                grid-template-areas:
+                    "a b b b b"
+                    "a c c c c"
+                    "a c c c c";
+                align-items: start;
+                border: solid 2px;
+                border-image: linear-gradient(167deg, rgba(0, 216, 247, 0) 50%, rgba(0, 216, 247, 1) 100%) 2 2 2 2;
+                padding: 0.5vw;
+            }
+            .bookmark:hover {
+                border-image: linear-gradient(167deg, rgba(0, 216, 247, 0) 0%, rgba(0, 216, 247, 1) 100%) 2 2 2 2;
+                box-shadow: 0.1vw 0.1vw 0.05vw 0.05vw rgba(0, 108, 247, 0.2);
             }
             .bookmark.inactive {
                 display: none;
             }
-            .bookmark > a {
-                grid-column: 1 / 3;
-                grid-row: 1 / 3;
+            .bookmark > .icon {
+                width: 64px;
+                grid-area: a;
             }
             .bookmark .tags {
-                justify-content: left;
-                grid-column: 2;
-                grid-row: 1;
+                justify-self: start;
+                grid-area: c;
             }
             .bookmark p {
+                margin: 0;
+                grid-area: b;
                 word-wrap: anywhere;
+            }
+            .bookmark a {
+                text-decoration: none;
+                color: rgb(76, 0, 152);
             }
         </style>
     </head>
