@@ -184,9 +184,11 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, ic
         async with session.get(b.icon_uri) as resp:
             data = await resp.read()
             if resp.status != 200:
+                logger.warning('aio get status: %d, %s', resp.status, b.icon_uri)
                 return
             img_type = resp.headers.get('Content-Type')
             if not img_type.startswith("image"):
+                logger.warning('aio get unknown type: %s, %s', img_type, b.icon_uri)
                 return
             data = base64.b64encode(data).decode()
             if not data:
@@ -646,7 +648,7 @@ def main():
     modify_key_group.add_argument("--title", help="title")
     modify_key_group.add_argument("--uri", help="uri")
     modify_value_group = modify_parser.add_argument_group()
-    modify_tag_group = modify_value_group.add_mutually_exclusive_group(required=True)
+    modify_tag_group = modify_value_group.add_mutually_exclusive_group(required=False)
     modify_tag_group.add_argument("--tag", metavar="TAG", dest='tags', default=[], action='append')
     modify_tag_group.add_argument("--add-tag", metavar="TAG", dest='add_tags', default=[], action='append')
     modify_tag_group.add_argument("--remove-tag", metavar="TAG", dest='remove_tags', default=[], action='append')
