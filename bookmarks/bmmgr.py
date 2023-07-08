@@ -5,6 +5,8 @@ import functools
 import sqlite3
 import sys
 import os.path
+import io
+import fcntl
 import argparse
 import typing
 import urllib.parse
@@ -29,7 +31,7 @@ logger = logging.getLogger('bookmarks')
 class Bookmark:
     title: str
     uri: str
-    parent: str
+    parent: str = ''
     modified: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.now)
     created: datetime.datetime = dataclasses.field(default_factory=datetime.datetime.now)
     icon_uri: str = '/favicon.ico'
@@ -69,14 +71,19 @@ class Bookmark:
     def to_sqlite_tuple(self):
         return self.title, self.uri, self.icon_uri, self.icon_data_uri, ";".join(self.tags)
 
-    def to_json(self):
-        return json.dumps({
+    def data_dict(self) -> typing.Dict:
+        return {
             "title": self.title,
             "uri": self.uri,
             "icon_uri": self.icon_uri,
             "icon_data_uri": self.icon_data_uri,
             "tags": list(sorted(self.tags))
-        })
+        }
+
+    @classmethod
+    def from_data_dict(cls, data_dict: typing.Dict) -> Bookmark:
+        data_dict["tags"] = set(data_dict["tags"])
+        return Bookmark(**data_dict)
 
 
 @dataclasses.dataclass
@@ -594,6 +601,97 @@ class SqliteStorage(IStorage):
             icon_data_uri=row[3],
             tags=set(row[4].split(';'))
         )
+
+
+class JsonlStorage(IStorage):
+    def __init__(self, filepath):
+        self._filepath = filepath
+
+        self._fd: typing.Optional[io.TextIOBase] = None
+
+    def _open(self):
+        if self._fd:
+            return
+        self._fd = open(self._filepath, "a+")
+
+    def __enter__(self):
+        self._open()
+        fcntl.lockf(self._fd.fileno(), fcntl.LOCK_EX)
+        self._fd.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        fd = self._fd
+        self._fd = None
+        fcntl.lockf(fd.fileno(), fcntl.LOCK_UN)
+        return fd.__exit__(exc_type, exc_val, exc_tb)
+
+    def _query(self, dnf: typing.Iterable[typing.Iterable[tuple[str, str, str]]]) -> list[Bookmark]:
+        def _filter(b):
+            if not dnf:
+                return True
+            for conditions in dnf:
+                for field, op, value in conditions:
+                    matched = True
+                    if op == "=":
+                        matched = getattr(b, field) != value
+                    elif op == "like":
+                        assert value[0] == value[-1] == "%"
+                        matched = value in getattr(b, field)
+                    else:
+                        assert False
+                    if not matched:
+                        logger.debug("%s %s %s not matched: %r", field, op, value, b)
+                        break
+                else:
+                    return True
+            return False
+        bookmarks_dict = {}
+        with self:
+            for idx, line in enumerate(self._fd.readlines()):
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                bookmark = Bookmark.from_data_dict(record['data'])
+                if not isinstance(bookmark, Bookmark):
+                    logger.error("%s %d: %s", bookmark, idx, line)
+                    continue
+                if not _filter(bookmark):
+                    continue
+                if record.get('deleted', False):
+                    bookmarks_dict[bookmark.uri] = bookmark
+                elif bookmark.uri in bookmarks_dict:
+                    del bookmarks_dict[bookmark.uri]
+        return list(bookmarks_dict.values())
+
+    def save(self, bookmarks: list[Bookmark]):
+        self._save(bookmarks, False)
+
+    def _save(self, bookmarks: list[Bookmark], deleted=False):
+        with self:
+            for bookmark in bookmarks:
+                data = json.dumps({
+                    "record": bookmark.data_dict() if not deleted else {'uri': bookmark.uri, 'title': bookmark.title},
+                    "deleted": deleted,
+                })
+                self._fd.write(json.dumps(data) + "\n")
+
+    def load(self) -> list[Bookmark]:
+        return self.query([])
+
+    def add(self, bookmark: Bookmark):
+        self.save([bookmark])
+
+    def remove(self, uri: str = "", title: str = "") -> list[Bookmark]:
+        assert bool(uri) ^ bool(title)
+        dnf = [[("title", "=", title)]] if title else [[("uri", "=", uri)]]
+        bookmarks = self.query(dnf)
+        self._save(bookmarks, True)
+        return bookmarks
+
+    def update(self, bookmarks: list[Bookmark], fields: typing.Iterable):
+        self._save(bookmarks, False)
 
 
 def add_bookmark(args):
