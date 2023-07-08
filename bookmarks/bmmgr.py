@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import abc
 import functools
 import sqlite3
 import sys
@@ -67,6 +68,15 @@ class Bookmark:
 
     def to_sqlite_tuple(self):
         return self.title, self.uri, self.icon_uri, self.icon_data_uri, ";".join(self.tags)
+
+    def to_json(self):
+        return json.dumps({
+            "title": self.title,
+            "uri": self.uri,
+            "icon_uri": self.icon_uri,
+            "icon_data_uri": self.icon_data_uri,
+            "tags": list(sorted(self.tags))
+        })
 
 
 @dataclasses.dataclass
@@ -442,48 +452,148 @@ def get_chrome():
     return get_chromium('google-chrome')
 
 
-def save_bookmarks2sqlite(bookmarks: list[Bookmark], db):
-    conn = sqlite3.connect(db)
-    bookmark_tuples = [b.to_sqlite_tuple() for b in bookmarks]
-    with conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS bookmarks(title, uri, icon_uri, icon_data_uri, tags)")
-        conn.executemany("INSERT INTO bookmarks VALUES (?,?,?,?,?)", bookmark_tuples)
-    conn.close()
+class IStorage(abc.ABC):
+
+    def query(self, dnf: typing.Iterable[typing.Iterable[tuple[str, str, str]]]) -> list[Bookmark]:
+        assert isinstance(dnf, (list, tuple))
+        assert all(map(lambda x: isinstance(x, (list, tuple)), dnf))
+        assert all(op in ("=", "like") for conditions in dnf for _, op, _ in conditions)
+        return self._query(dnf)
+
+    @abc.abstractmethod
+    def _query(self, dnf: typing.Iterable[typing.Iterable[tuple[str, str, str]]]) -> list[Bookmark]:
+        pass
+
+    @abc.abstractmethod
+    def save(self, bookmarks: list[Bookmark]):
+        ...
+
+    @abc.abstractmethod
+    def load(self) -> list[Bookmark]:
+        ...
+
+    @abc.abstractmethod
+    def add(self, bookmark: Bookmark):
+        ...
+
+    @abc.abstractmethod
+    def remove(self, uri: str = "", title: str = "") -> list[Bookmark]:
+        ...
+
+    @abc.abstractmethod
+    def update(self, bookmarks: list[Bookmark], fields: typing.Iterable):
+        ...
 
 
-def row2bookmark(row):
-    return Bookmark(
-        title=row[0],
-        uri=row[1],
-        parent='',
-        icon_uri=row[2],
-        icon_data_uri=row[3],
-        tags=set(row[4].split(';'))
-    )
+class SqliteStorage(IStorage):
+    def __init__(self, db):
+        self._db = db
+        self._conn: typing.Optional[sqlite3.Connection] = None
+
+    def _connect(self):
+        if self._conn:
+            return
+        self._conn = sqlite3.connect(self._db)
+
+    def _disconnect(self):
+        if not self._conn:
+            return
+        self._conn.close()
+        self._conn = None
+
+    def __enter__(self):
+        self._connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._disconnect()
+        return
+
+    def _query(self, dnf: typing.Iterable[typing.Iterable[tuple[str, str, str]]]) -> list[Bookmark]:
+        where_sql = "(" + ") OR (".join(
+            ("(" + ") AND (".join(f"`{field}` {op} ?" for field, op, _ in conditions) + ")" ) for conditions in dnf
+        ) + ")"
+        sql = f"SELECT * FROM bookmarks WHERE {where_sql}"
+        logger.debug("query sql: %s", sql)
+        params = tuple(value for conditions in dnf for _, _, value in conditions)
+        with self, self._conn:
+            return [
+                self._row2bookmark(row) for row in self._conn.execute(sql, params)
+            ]
 
 
-def load_bookmarks_from_sqlite(db) -> list[Bookmark]:
-    conn = sqlite3.connect(db)
-    bookmarks = [
-        row2bookmark(row) for row in conn.execute("SELECT * FROM bookmarks")
-    ]
-    conn.close()
-    return bookmarks
+    def save(self, bookmarks: list[Bookmark]):
+        bookmark_tuples = [b.to_sqlite_tuple() for b in bookmarks]
+        with self, self._conn:
+            self._conn.execute("CREATE TABLE IF NOT EXISTS bookmarks(title, uri, icon_uri, icon_data_uri, tags)")
+            self._conn.executemany("INSERT INTO bookmarks VALUES (?,?,?,?,?)", bookmark_tuples)
+
+    def load(self) -> list[Bookmark]:
+        with self, self._conn:
+            return [
+                self._row2bookmark(row) for row in self._conn.execute("SELECT * FROM bookmarks")
+            ]
+
+    def add(self, bookmark: Bookmark):
+        def _check_dup(an):
+            rows = self._conn.execute(f"SELECT * FROM bookmarks where {an}=?", (getattr(bookmark, an), )).fetchall()
+            if len(rows) > 0:
+                raise ValueError(f"Duplicate for {an}={getattr(bookmark, an)}")
+
+        with self, self._conn:
+            _check_dup("title")
+            _check_dup("uri")
+            self._conn.execute("INSERT INTO bookmarks VALUES (?,?,?,?,?)", bookmark.to_sqlite_tuple())
+
+    def remove(self, uri: str = "", title: str = "") -> list[Bookmark]:
+        assert bool(uri) ^ bool(title)
+        if title:
+            key = title
+            key_an = "title"
+        else:
+            key = uri
+            key_an = "uri"
+        with self, self._conn:
+            cur = self._conn.execute(f"SELECT * FROM bookmarks WHERE {key_an}=?", (key,))
+            bookmarks = [self._row2bookmark(row) for row in cur]
+            if len(bookmarks) > 0:
+                self._conn.execute(f"DELETE FROM bookmarks WHERE {key_an}=?", (key,))
+            return bookmarks
+
+    def update(self, bookmarks: list[Bookmark], fields: typing.Iterable):
+        fields = list(fields)
+        only_icon = all(map(lambda x: x.startswith("icon"), fields))
+        assert "uri" not in fields, "'uri' should not be updated"
+        sql = "UPDATE bookmarks SET {} WHERE uri=?".format(
+            ",".join(f"{field}=?" for field in fields)
+        )
+
+        fields4params = list(fields) + ["uri"]
+
+        def _to_params(b):
+            return tuple(map(lambda x: getattr(b, x) if x != "tags" else ";".join(getattr(b, "tags")), fields4params))
+
+        with self, self._conn:
+            for bookmark in bookmarks:
+                if only_icon and not bookmark.icon_updated:
+                    continue
+                if only_icon:
+                    logger.info(f"{bookmark.title}({bookmark.uri}) icon updated")
+                parameters = _to_params(bookmark)
+                cur = self._conn.execute(sql, parameters)
+                logger.debug("sql=%s, parameters=%s, rowcount=%d", sql, parameters, cur.rowcount)
 
 
-def add_bookmark2sqlite(bookmark: Bookmark, db):
-    conn = sqlite3.connect(db)
-
-    def _check_dup(an):
-        rows = conn.execute(f"SELECT * FROM bookmarks where {an}=?", (getattr(bookmark, an), )).fetchall()
-        if len(rows) > 0:
-            raise ValueError(f"Duplicate for {an}={getattr(bookmark, an)}")
-
-    with conn:
-        _check_dup("title")
-        _check_dup("uri")
-        conn.execute("INSERT INTO bookmarks VALUES (?,?,?,?,?)", bookmark.to_sqlite_tuple())
-    conn.close()
+    @staticmethod
+    def _row2bookmark(row):
+        return Bookmark(
+            title=row[0],
+            uri=row[1],
+            parent='',
+            icon_uri=row[2],
+            icon_data_uri=row[3],
+            tags=set(row[4].split(';'))
+        )
 
 
 def add_bookmark(args):
@@ -491,95 +601,65 @@ def add_bookmark(args):
     get_all_info(bookmark, get_title=True)
     if not bookmark.title:
         bookmark.title = bookmark.uri
-    add_bookmark2sqlite(bookmark, args.db)
-
-
-def print_bookmarks(cur: sqlite3.Cursor | list[tuple[str, str, str, str, str]]):
-    for idx, row in enumerate(cur):
-        print(f"========== Bookmark.{idx} ===========")
-        print(f"title={row[0]}, uri={row[1]}")
-        print(f"icon_uri={row[2]}, has_icon_data={bool(row[3])}")
-        print(f"tags:", "  ".join(row[4].split(";")))
+    SqliteStorage(args.db).add(bookmark)
 
 
 def remove_bookmark(args):
-    conn = sqlite3.connect(args.db)
-    key_an = "title" if args.title else "uri"
-    with conn:
-        cur = conn.execute(f"SELECT * FROM bookmarks WHERE {key_an}=?", (getattr(args, key_an),))
-        bookmarks = cur.fetchall()
-        if len(bookmarks) < 1:
-            print('Nothing to remove')
-        else:
-            print_bookmarks(bookmarks)
-            print("=" * 80)
-            if not args.yes and input(f'Do you want to remove?[Yy/Nn]').lower() != 'y':
-                print("Won't remove")
-            else:
-                cur = conn.execute(f"DELETE FROM bookmarks WHERE {key_an}=?", (getattr(args, key_an),))
-                print(cur.rowcount, 'deleted')
-    conn.close()
+    bookmarks = SqliteStorage(args.db).remove(args.uri, args.title)
+    logger.info("total %d deleted", len(bookmarks))
+    for bookmark in bookmarks:
+        logger.info("%s(%s) deleted", bookmark.uri, bookmark.title)
 
 
 def update_icon(args):
-    bookmarks = load_bookmarks_from_sqlite(args.db)
+    storage = SqliteStorage(args.db)
+    bookmarks = storage.load()
     get_all_info(bookmarks, icon_cache_dir=args.icon_cache_dir, force=True)
-    conn = sqlite3.connect(args.db)
-    with conn:
-        for bookmark in bookmarks:
-            if not bookmark.icon_updated:
-                continue
-            logger.info(f"{bookmark.title}({bookmark.uri}) icon updated")
-            conn.execute("UPDATE bookmarks SET icon_data_uri=? WHERE uri =?", (bookmark.icon_data_uri, bookmark.uri))
-    conn.close()
+    storage.update(bookmarks, fields=["icon_data_uri", "icon_uri"])
+
 
 
 def query_bookmark(args):
-    conn = sqlite3.connect(args.db)
-    with conn:
-        if args.title:
-            cur = conn.execute("SELECT * FROM bookmarks WHERE title like ?", (f"%{args.title}%", ))
-        else:
-            cur = conn.execute("SELECT * FROM bookmarks WHERE uri like ?", (f"%{args.uri}%", ))
-        print_bookmarks(cur)
-    conn.close()
+    storage = SqliteStorage(args.db)
+    key_an = "title" if args.title else "uri"
+    dnf = [[(key_an, "like", f"%{getattr(args, key_an)}%")]]
+    bookmarks = storage.query(dnf)
+    for idx, bookmark in enumerate(bookmarks):
+        print(f"========== Bookmark.{idx} ===========")
+        print(f"title={bookmark.title}, uri={bookmark.uri}")
+        print(f"icon_uri={bookmark.icon_uri}, has_icon_data={bool(bookmark.icon_data_uri)}")
+        print(f"tags:", "  ".join(sorted(bookmark.tags)))
 
 
 def modify_bookmark(args):
-    conn = sqlite3.connect(args.db)
     key_an = "title" if args.title else "uri"
-    with conn:
-        cur = conn.execute(f"SELECT * FROM bookmarks WHERE {key_an}=?", (getattr(args, key_an),))
-        bookmarks = [row2bookmark(row) for row in cur]
-        assert len(bookmarks) == 1
-        updates = {}
-        if args.icon_uri:
-            for b in bookmarks:
-                b.icon_uri = args.icon_uri
-            get_all_info(bookmarks)
-            if bookmarks[0].icon_updated:
-                updates['icon_data_uri'] = bookmarks[0].icon_data_uri
-                updates['icon_uri'] = args.icon_uri
-        if args.tags:
-            updates['tags'] = ';'.join(args.tags)
-        elif args.add_tags:
-            tags = bookmarks[0].tags
-            tags.update(args.add_tags)
-            updates['tags'] = ';'.join(tags)
-        elif args.remove_tags:
-            tags = bookmarks[0].tags
-            for tag in set(args.remove_tags):
-                tags.remove(tag)
-            updates['tags'] = ';'.join(tags)
-        if updates:
-            set_stat = ",".join(f"{k}=?" for k in updates.keys())
-            sql = f"UPDATE bookmarks SET {set_stat} WHERE {key_an}=?"
-            parameters = (*updates.values(), getattr(args, key_an))
-            logger.debug("sql=%s, parameters=%s", sql, parameters)
-            rowcount = conn.execute(sql, parameters).rowcount
-            print(rowcount, 'rows updated')
-        else:
-            print("nothing to update")
+    dnf = [[(key_an, "like", f"%{getattr(args, key_an)}%")]]
+    storage = SqliteStorage(args.db)
+    bookmarks = storage.query(dnf)
+    assert len(bookmarks) == 1
+    fields = []
+    if args.icon_uri:
+        for b in bookmarks:
+            b.icon_uri = args.icon_uri
+        get_all_info(bookmarks)
+        if bookmarks[0].icon_updated:
+            fields.extend(("icon_data_uri", "icon_uri"))
+    if args.tags:
+        bookmarks[0].tags = args.tags
+        fields.append("tags")
+    elif args.add_tags:
+        tags = bookmarks[0].tags
+        tags.update(args.add_tags)
+        fields.append("tags")
+    elif args.remove_tags:
+        tags = bookmarks[0].tags
+        for tag in set(args.remove_tags):
+            tags.remove(tag)
+        fields.append("tags")
+    if fields:
+        storage.update(bookmarks, fields)
+    else:
+        print("nothing to update")
 
 
 def main():
@@ -684,14 +764,14 @@ def main():
         folder = browser_mapping[args.browser]['loader'](args.input_path, args.skip_empty)
         get_all_info(folder, args.path_filters, args.icon_cache_dir)
         bookmarks, _ = convert2list_with_tags(folder, args.path_filters)
-        save_bookmarks2sqlite(bookmarks, args.db)
+        SqliteStorage(args.db).save(bookmarks)
     elif args.action == "render":
         if os.path.exists(args.output_path):
             logger.warning('%s exists!', args.output_path)
             if not args.yes and input(f'Do you want to overwrite "{args.output_path}"?[Yy/Nn]').lower() != 'y':
                 sys.exit(1)
         with open(args.output_path, 'w+') as of:
-            bookmarks = load_bookmarks_from_sqlite(args.db)
+            bookmarks = SqliteStorage(args.db).load()
             html = render(bookmarks)
             of.write(html)
     elif args.action == "query":
