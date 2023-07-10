@@ -421,7 +421,131 @@ def render(bookmarks: list[Bookmark]) -> str:
         'bookmarks': ''.join(_(b) for b in bookmarks)
     }
 
-    return re.sub(r'\{%\s*(\w+)\s*%}', lambda m: context[m.group(1)], HTML_TMPL)
+    return re.sub(r'\{%\s*(\w+)\s*%}', lambda m: context[m.group(1)], '''<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Bookmarks</title>
+        <style>
+            .tags {
+                display: flex;
+                flex-wrap: wrap;
+                justify-content: center;
+                gap: 1vw;
+            }
+            .tags > .tag {
+                background: #a3d2ff;
+                color: white;
+                padding: 0.2vw;
+                cursor: pointer;
+            }
+            .tag.active {
+                background: #ffa3d2;
+            }
+            .tag > span + span::before {
+                content: "(";
+            }
+            .tag > span + span::after {
+                content: ")";
+            }
+            .bookmarks {
+                margin-top: 3vh;
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+                grid-gap: 1vw;
+            }
+            .bookmark {
+                grid-auto-rows: max-content;
+                display: grid;
+                grid-template-columns: 64px 1fr;
+                gap: 1vw;
+                grid-template-areas:
+                    "a b b b b"
+                    "a c c c c"
+                    "a c c c c";
+                align-items: start;
+                border: solid 2px;
+                border-image: linear-gradient(167deg, rgba(0, 216, 247, 0) 50%, rgba(0, 216, 247, 1) 100%) 2 2 2 2;
+                padding: 0.5vw;
+            }
+            .bookmark:hover {
+                border-image: linear-gradient(167deg, rgba(0, 216, 247, 0) 0%, rgba(0, 216, 247, 1) 100%) 2 2 2 2;
+                box-shadow: 0.1vw 0.1vw 0.05vw 0.05vw rgba(0, 108, 247, 0.2);
+            }
+            .bookmark.inactive {
+                display: none;
+            }
+            .bookmark > .icon {
+                width: 64px;
+                grid-area: a;
+            }
+            .bookmark .tags {
+                justify-self: start;
+                grid-area: c;
+            }
+            .bookmark p {
+                margin: 0;
+                grid-area: b;
+                word-wrap: anywhere;
+            }
+            .bookmark a {
+                text-decoration: none;
+                color: rgb(76, 0, 152);
+            }
+        </style>
+    </head>
+    <body>
+        <div class="tags nav">
+        {% tags %}
+        </div>
+        <div class="bookmarks">
+        {% bookmarks %}
+        </div>
+    <script>
+        var tag_clicked = false;
+        function clickTag(e) {
+            if (tag_clicked) {
+                return;
+            }
+            tag_clicked = true;
+            let ele = e.target;
+            while (!ele.dataset.hasOwnProperty('name')) {
+                ele = ele.parentElement;
+            }
+            let tag = ele.dataset.name;
+            let activate = !ele.classList.contains('active');
+            for (let other_tag_e of document.querySelectorAll('.nav .tag')) {
+                other_tag_e.classList.remove('active');
+                if (activate && other_tag_e.dataset.name == tag) {
+                    other_tag_e.classList.add('active');
+                }
+            }
+            if (activate) {
+                ele.classList.add('active');
+            }
+            for (let bookmark of document.querySelectorAll('.bookmark')) {
+                let active_bookmark_tag = bookmark.querySelector(`[data-name="${tag}"]`);
+                for (let bookmark_tag of bookmark.querySelectorAll('.tag')) {
+                    bookmark_tag.classList.remove('active');
+                }
+                if (!activate) {
+                    bookmark.classList.remove('inactive');
+                } else if (active_bookmark_tag) {
+                    active_bookmark_tag.classList.add('active');
+                    bookmark.classList.remove('inactive');
+                } else {
+                    bookmark.classList.add('inactive');
+                }
+            }
+            tag_clicked = false;
+        };
+        (function () {
+            for (let e of document.querySelectorAll('.tag')) {
+                e.addEventListener('click', clickTag);
+            }
+        })();
+    </script>
+    </body>
+</html>''')
 
 
 def get_latest_firefox() -> typing.Optional[str]:
@@ -697,72 +821,6 @@ class JsonlStorage(IStorage):
         self._save(bookmarks, False)
 
 
-def add_bookmark(args):
-    bookmark = Bookmark(title=args.title, uri=args.uri, parent='', tags=args.tags)
-    get_all_info(bookmark, get_title=True)
-    if not bookmark.title:
-        bookmark.title = bookmark.uri
-    get_storage(args.storage).add(bookmark)
-
-
-def remove_bookmark(args):
-    bookmarks = get_storage(args.storage).remove(args.uri, args.title)
-    logger.info("total %d deleted", len(bookmarks))
-    for bookmark in bookmarks:
-        logger.info("%s(%s) deleted", bookmark.uri, bookmark.title)
-
-
-def update_icon(args):
-    storage = get_storage(args.storage)
-    bookmarks = storage.load()
-    get_all_info(bookmarks, icon_cache_dir=args.icon_cache_dir, force=True)
-    storage.update(bookmarks, fields=["icon_data_uri", "icon_uri"])
-
-
-
-def query_bookmark(args):
-    storage = get_storage(args.storage)
-    key_an = "title" if args.title else "uri"
-    dnf = [[(key_an, "like", f"%{getattr(args, key_an)}%")]]
-    bookmarks = storage.query(dnf)
-    for idx, bookmark in enumerate(bookmarks):
-        print(f"========== Bookmark.{idx} ===========")
-        print(f"title={bookmark.title}, uri={bookmark.uri}")
-        print(f"icon_uri={bookmark.icon_uri}, has_icon_data={bool(bookmark.icon_data_uri)}")
-        print(f"tags:", "  ".join(sorted(bookmark.tags)))
-
-
-def modify_bookmark(args):
-    key_an = "title" if args.title else "uri"
-    dnf = [[(key_an, "like", f"%{getattr(args, key_an)}%")]]
-    storage = get_storage(args.storage)
-    bookmarks = storage.query(dnf)
-    assert len(bookmarks) == 1
-    fields = []
-    if args.icon_uri:
-        for b in bookmarks:
-            b.icon_uri = args.icon_uri
-        get_all_info(bookmarks)
-        if bookmarks[0].icon_updated:
-            fields.extend(("icon_data_uri", "icon_uri"))
-    if args.tags:
-        bookmarks[0].tags = args.tags
-        fields.append("tags")
-    elif args.add_tags:
-        tags = bookmarks[0].tags
-        tags.update(args.add_tags)
-        fields.append("tags")
-    elif args.remove_tags:
-        tags = bookmarks[0].tags
-        for tag in set(args.remove_tags):
-            tags.remove(tag)
-        fields.append("tags")
-    if fields:
-        storage.update(bookmarks, fields)
-    else:
-        print("nothing to update")
-
-
 def get_storage(path: str):
     if path.endswith(".db"):
         return SqliteStorage(path)
@@ -771,13 +829,125 @@ def get_storage(path: str):
     raise ValueError(f"Unsupported storage: {path}")
 
 
-def resave(args):
-    src = get_storage(args.src)
-    dst = get_storage(args.dst)
-    dst.save(src.load())
+def register_add(add_parser):
+    add_parser.add_argument('storage', help='/path/to/storage')
+    add_parser.add_argument("--title", help="title", required=False)
+    add_parser.add_argument("--uri", help="uri", required=True)
+    add_parser.add_argument("--tag", metavar='TAG', dest='tags', default=[], action='append', required=True)
+
+    def add_bookmark(args):
+        bookmark = Bookmark(title=args.title, uri=args.uri, parent='', tags=args.tags)
+        get_all_info(bookmark, get_title=True)
+        if not bookmark.title:
+            bookmark.title = bookmark.uri
+        get_storage(args.storage).add(bookmark)
+
+    return add_bookmark
 
 
-def main():
+def register_remove(remove_parser):
+    remove_parser.add_argument('storage', help='/path/to/storage')
+    remove_key_group = remove_parser.add_mutually_exclusive_group(required=True)
+    remove_key_group.add_argument("--title", help="title")
+    remove_key_group.add_argument("--uri", help="uri")
+    remove_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
+    def remove_bookmark(args):
+        bookmarks = get_storage(args.storage).remove(args.uri, args.title)
+        logger.info("total %d deleted", len(bookmarks))
+        for bookmark in bookmarks:
+            logger.info("%s(%s) deleted", bookmark.uri, bookmark.title)
+    return remove_bookmark
+
+
+def register_update_icon(update_icon_parser):
+    update_icon_parser.add_argument('storage', help='/path/to/storage')
+    update_icon_parser.add_argument('--icon-cache', dest='icon_cache_dir', default=None,
+                                    help='use the cache dir for icons')
+
+    def update_icon(args):
+        storage = get_storage(args.storage)
+        bookmarks = storage.load()
+        get_all_info(bookmarks, icon_cache_dir=args.icon_cache_dir, force=True)
+        storage.update(bookmarks, fields=["icon_data_uri", "icon_uri"])
+
+    return update_icon
+
+
+def register_query(query_parser):
+    query_parser.add_argument('storage', help='/path/to/storage')
+    query_key_group = query_parser.add_mutually_exclusive_group(required=True)
+    query_key_group.add_argument("--title")
+    query_key_group.add_argument("--uri")
+    def query_bookmark(args):
+        storage = get_storage(args.storage)
+        key_an = "title" if args.title else "uri"
+        dnf = [[(key_an, "like", f"%{getattr(args, key_an)}%")]]
+        bookmarks = storage.query(dnf)
+        for idx, bookmark in enumerate(bookmarks):
+            print(f"========== Bookmark.{idx} ===========")
+            print(f"title={bookmark.title}, uri={bookmark.uri}")
+            print(f"icon_uri={bookmark.icon_uri}, has_icon_data={bool(bookmark.icon_data_uri)}")
+            print(f"tags:", "  ".join(sorted(bookmark.tags)))
+    return query_bookmark
+
+
+def register_modify(modify_parser):
+    modify_parser.add_argument('storage', help='/path/to/storage')
+    modify_key_group = modify_parser.add_mutually_exclusive_group(required=True)
+    modify_key_group.add_argument("--title", help="title")
+    modify_key_group.add_argument("--uri", help="uri")
+    modify_value_group = modify_parser.add_argument_group()
+    modify_tag_group = modify_value_group.add_mutually_exclusive_group(required=False)
+    modify_tag_group.add_argument("--tag", metavar="TAG", dest='tags', default=[], action='append')
+    modify_tag_group.add_argument("--add-tag", metavar="TAG", dest='add_tags', default=[], action='append')
+    modify_tag_group.add_argument("--remove-tag", metavar="TAG", dest='remove_tags', default=[], action='append')
+    modify_value_group.add_argument("--icon-uri")
+
+    def modify_bookmark(args):
+        key_an = "title" if args.title else "uri"
+        dnf = [[(key_an, "like", f"%{getattr(args, key_an)}%")]]
+        storage = get_storage(args.storage)
+        bookmarks = storage.query(dnf)
+        assert len(bookmarks) == 1
+        fields = []
+        if args.icon_uri:
+            for b in bookmarks:
+                b.icon_uri = args.icon_uri
+            get_all_info(bookmarks)
+            if bookmarks[0].icon_updated:
+                fields.extend(("icon_data_uri", "icon_uri"))
+        if args.tags:
+            bookmarks[0].tags = args.tags
+            fields.append("tags")
+        elif args.add_tags:
+            tags = bookmarks[0].tags
+            tags.update(args.add_tags)
+            fields.append("tags")
+        elif args.remove_tags:
+            tags = bookmarks[0].tags
+            for tag in set(args.remove_tags):
+                tags.remove(tag)
+            fields.append("tags")
+        if fields:
+            storage.update(bookmarks, fields)
+        else:
+            print("nothing to update")
+
+    return modify_bookmark
+
+
+def register_resave(resave_parser):
+    def _(args):
+        src = get_storage(args.src)
+        dst = get_storage(args.dst)
+        dst.save(src.load())
+
+    resave_parser.add_argument("src", help="/path/to/source")
+    resave_parser.add_argument("dst", help="/path/to/destination")
+    return _
+
+
+def register_convert(convert_parser):
     browser_mapping = {
         'firefox': {
             'loader': load_firefox,
@@ -793,78 +963,8 @@ def main():
         }
     }
 
-    parser = argparse.ArgumentParser(add_help=True)
-    sub_parser = parser.add_subparsers(dest="action")
-    convert_parser = sub_parser.add_parser("convert")
-    convert_parser.add_argument('-b', '--browser', dest='browser', required=True, choices=list(browser_mapping.keys()))
-    convert_parser.add_argument('storage', help='/path/to/storage')
-    convert_parser.add_argument('-i', dest='input_path', required=False, default=None,
-                                help='/path/to/bookmarks/file, if not supplied, the default (across the browser) will be used.')
-    convert_parser.add_argument('-p', '--path-filter', metavar='PATH_FILTER', dest='path_filters', default=[], action='append',
-                                help='filter bookmarks by path, use "." to split parent and child. apply multiple times works as "OR"')
-    convert_parser.add_argument('--skip-empty', dest='skip_empty', action='store_true',
-                                help='skip empty folder')
-    convert_parser.add_argument('--icon-cache', dest='icon_cache_dir', default=None,
-                                help='use the cache dir for icons')
-    convert_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
-    convert_parser.add_argument('-v', '--verbose', action='count', default=0)
+    def _(args):
 
-    resave_parser = sub_parser.add_parser("resave")
-    resave_parser.add_argument('-v', '--verbose', action='count', default=0)
-    resave_parser.add_argument("src", help="/path/to/source")
-    resave_parser.add_argument("dst", help="/path/to/destination")
-
-    render_parser = sub_parser.add_parser("render")
-    render_parser.add_argument('storage', help='/path/to/storage')
-    render_parser.add_argument("output_path", help='/path/to/the/generate/html')
-    render_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
-    render_parser.add_argument('-v', '--verbose', action='count', default=0)
-
-    query_parser = sub_parser.add_parser("query")
-    query_parser.add_argument('storage', help='/path/to/storage')
-    query_key_group = query_parser.add_mutually_exclusive_group(required=True)
-    query_key_group.add_argument("--title")
-    query_key_group.add_argument("--uri")
-    query_parser.add_argument('-v', '--verbose', action='count', default=0)
-
-    add_parser = sub_parser.add_parser("add")
-    add_parser.add_argument('storage', help='/path/to/storage')
-    add_parser.add_argument("--title", help="title", required=False)
-    add_parser.add_argument("--uri", help="uri", required=True)
-    add_parser.add_argument("--tag", metavar='TAG', dest='tags', default=[], action='append', required=True)
-    add_parser.add_argument('-v', '--verbose', action='count', default=0)
-
-    remove_parser = sub_parser.add_parser("remove")
-    remove_parser.add_argument('storage', help='/path/to/storage')
-    remove_key_group = remove_parser.add_mutually_exclusive_group(required=True)
-    remove_key_group.add_argument("--title", help="title")
-    remove_key_group.add_argument("--uri", help="uri")
-    remove_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
-    remove_parser.add_argument('-v', '--verbose', action='count', default=0)
-
-    modify_parser = sub_parser.add_parser("modify")
-    modify_parser.add_argument('storage', help='/path/to/storage')
-    modify_parser.add_argument("-v", "--verbose", action='count', default=0)
-    modify_key_group = modify_parser.add_mutually_exclusive_group(required=True)
-    modify_key_group.add_argument("--title", help="title")
-    modify_key_group.add_argument("--uri", help="uri")
-    modify_value_group = modify_parser.add_argument_group()
-    modify_tag_group = modify_value_group.add_mutually_exclusive_group(required=False)
-    modify_tag_group.add_argument("--tag", metavar="TAG", dest='tags', default=[], action='append')
-    modify_tag_group.add_argument("--add-tag", metavar="TAG", dest='add_tags', default=[], action='append')
-    modify_tag_group.add_argument("--remove-tag", metavar="TAG", dest='remove_tags', default=[], action='append')
-    modify_value_group.add_argument("--icon-uri")
-
-    update_icon_parser = sub_parser.add_parser("update-icon")
-    update_icon_parser.add_argument('storage', help='/path/to/storage')
-    update_icon_parser.add_argument('--icon-cache', dest='icon_cache_dir', default=None,
-                                    help='use the cache dir for icons')
-    update_icon_parser.add_argument('-v', '--verbose', action='count', default=0)
-
-    args = parser.parse_args()
-    logger.setLevel(max(logging.ERROR - 10 * args.verbose, logging.DEBUG))
-
-    if args.action == "convert":
         if args.input_path is None:
             args.input_path = browser_mapping[args.browser]['get_default']()
             logger.info('use default of %s: %s', args.browser, args.input_path)
@@ -886,7 +986,24 @@ def main():
         get_all_info(folder, args.path_filters, args.icon_cache_dir)
         bookmarks, _ = convert2list_with_tags(folder, args.path_filters)
         get_storage(args.storage).save(bookmarks)
-    elif args.action == "render":
+
+    convert_parser.add_argument('-b', '--browser', dest='browser', required=True, choices=list(browser_mapping.keys()))
+    convert_parser.add_argument('storage', help='/path/to/storage')
+    convert_parser.add_argument('-i', dest='input_path', required=False, default=None,
+                                help='/path/to/bookmarks/file, if not supplied, the default (across the browser) will be used.')
+    convert_parser.add_argument('-p', '--path-filter', metavar='PATH_FILTER', dest='path_filters', default=[],
+                                action='append',
+                                help='filter bookmarks by path, use "." to split parent and child. apply multiple times works as "OR"')
+    convert_parser.add_argument('--skip-empty', dest='skip_empty', action='store_true',
+                                help='skip empty folder')
+    convert_parser.add_argument('--icon-cache', dest='icon_cache_dir', default=None,
+                                help='use the cache dir for icons')
+    convert_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
+    return _
+
+
+def register_render(render_parser):
+    def _(args):
         if os.path.exists(args.output_path):
             logger.warning('%s exists!', args.output_path)
             if not args.yes and input(f'Do you want to overwrite "{args.output_path}"?[Yy/Nn]').lower() != 'y':
@@ -895,145 +1012,36 @@ def main():
             bookmarks = get_storage(args.storage).load()
             html = render(bookmarks)
             of.write(html)
-    elif args.action == "query":
-        query_bookmark(args)
-    elif args.action == "add":
-        add_bookmark(args)
-    elif args.action == "remove":
-        remove_bookmark(args)
-    elif args.action == "modify":
-        modify_bookmark(args)
-    elif args.action == "update-icon":
-        update_icon(args)
-    elif args.action == "resave":
-        resave(args)
+
+    render_parser.add_argument('storage', help='/path/to/storage')
+    render_parser.add_argument("output_path", help='/path/to/the/generate/html')
+    render_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
+    return _
 
 
-HTML_TMPL = '''<html lang="zh-CN">
-    <head>
-        <meta charset="UTF-8" />
-        <title>Bookmarks</title>
-        <style>
-            .tags {
-                display: flex;
-                flex-wrap: wrap;
-                justify-content: center;
-                gap: 1vw;
-            }
-            .tags > .tag {
-                background: #a3d2ff;
-                color: white;
-                padding: 0.2vw;
-                cursor: pointer;
-            }
-            .tag.active {
-                background: #ffa3d2;
-            }
-            .tag > span + span::before {
-                content: "(";
-            }
-            .tag > span + span::after {
-                content: ")";
-            }
-            .bookmarks {
-                margin-top: 3vh;
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-                grid-gap: 1vw;
-            }
-            .bookmark {
-                grid-auto-rows: max-content;
-                display: grid;
-                grid-template-columns: 64px 1fr;
-                gap: 1vw;
-                grid-template-areas:
-                    "a b b b b"
-                    "a c c c c"
-                    "a c c c c";
-                align-items: start;
-                border: solid 2px;
-                border-image: linear-gradient(167deg, rgba(0, 216, 247, 0) 50%, rgba(0, 216, 247, 1) 100%) 2 2 2 2;
-                padding: 0.5vw;
-            }
-            .bookmark:hover {
-                border-image: linear-gradient(167deg, rgba(0, 216, 247, 0) 0%, rgba(0, 216, 247, 1) 100%) 2 2 2 2;
-                box-shadow: 0.1vw 0.1vw 0.05vw 0.05vw rgba(0, 108, 247, 0.2);
-            }
-            .bookmark.inactive {
-                display: none;
-            }
-            .bookmark > .icon {
-                width: 64px;
-                grid-area: a;
-            }
-            .bookmark .tags {
-                justify-self: start;
-                grid-area: c;
-            }
-            .bookmark p {
-                margin: 0;
-                grid-area: b;
-                word-wrap: anywhere;
-            }
-            .bookmark a {
-                text-decoration: none;
-                color: rgb(76, 0, 152);
-            }
-        </style>
-    </head>
-    <body>
-        <div class="tags nav">
-        {% tags %}
-        </div>
-        <div class="bookmarks">
-        {% bookmarks %}
-        </div>
-    <script>
-        var tag_clicked = false;
-        function clickTag(e) {
-            if (tag_clicked) {
-                return;
-            }
-            tag_clicked = true;
-            let ele = e.target;
-            while (!ele.dataset.hasOwnProperty('name')) {
-                ele = ele.parentElement;
-            }
-            let tag = ele.dataset.name;
-            let activate = !ele.classList.contains('active');
-            for (let other_tag_e of document.querySelectorAll('.nav .tag')) {
-                other_tag_e.classList.remove('active');
-                if (activate && other_tag_e.dataset.name == tag) {
-                    other_tag_e.classList.add('active');
-                }
-            }
-            if (activate) {
-                ele.classList.add('active');
-            }
-            for (let bookmark of document.querySelectorAll('.bookmark')) {
-                let active_bookmark_tag = bookmark.querySelector(`[data-name="${tag}"]`);
-                for (let bookmark_tag of bookmark.querySelectorAll('.tag')) {
-                    bookmark_tag.classList.remove('active');
-                }
-                if (!activate) {
-                    bookmark.classList.remove('inactive');
-                } else if (active_bookmark_tag) {
-                    active_bookmark_tag.classList.add('active');
-                    bookmark.classList.remove('inactive');
-                } else {
-                    bookmark.classList.add('inactive');
-                }
-            }
-            tag_clicked = false;
-        };
-        (function () {
-            for (let e of document.querySelectorAll('.tag')) {
-                e.addEventListener('click', clickTag);
-            }
-        })();
-    </script>
-    </body>
-</html>'''
+def main():
+    parser = argparse.ArgumentParser(add_help=True)
+    sub_parsers = parser.add_subparsers(dest="action", required=True)
+    register_mapping = {
+        'convert': register_convert,
+        'render': register_render,
+        'resave': register_resave,
+        'query': register_query,
+        'add': register_add,
+        'modify': register_modify,
+        'remove': register_remove,
+        'update-icon': register_update_icon
+    }
+    for name, register in register_mapping.items():
+        sub_parser = sub_parsers.add_parser(name)
+        sub_parser.add_argument('-v', '--verbose', action='count', default=0)
+        func = register(sub_parser)
+        assert callable(func)
+        sub_parser.set_defaults(func=func)
+
+    args = parser.parse_args()
+    logger.setLevel(max(logging.ERROR - 10 * args.verbose, logging.DEBUG))
+    args.func(args)
 
 
 if __name__ == "__main__":
