@@ -270,6 +270,8 @@ async def get_bookmark_title(session: aiohttp.ClientSession, bookmark: Bookmark)
     async def _get():
         async with session.get(bookmark.uri) as resp:
             data = await resp.read()
+            if resp.real_url != bookmark.uri:
+                logger.error('redirection found %s -> %s', bookmark.uri, resp.real_url)
             if resp.status != 200:
                 logger.warning('cannot fetch data from %s, got http code: %d', bookmark.uri, resp.status)
                 return
