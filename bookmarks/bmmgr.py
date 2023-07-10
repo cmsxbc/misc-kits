@@ -634,10 +634,10 @@ class JsonlStorage(IStorage):
                 for field, op, value in conditions:
                     matched = True
                     if op == "=":
-                        matched = getattr(b, field) != value
+                        matched = getattr(b, field) == value
                     elif op == "like":
                         assert value[0] == value[-1] == "%"
-                        matched = value in getattr(b, field)
+                        matched = value[1:-1] in getattr(b, field)
                     else:
                         assert False
                     if not matched:
@@ -648,21 +648,23 @@ class JsonlStorage(IStorage):
             return False
         bookmarks_dict = {}
         with self:
+            self._fd.seek(0, os.SEEK_SET)
             for idx, line in enumerate(self._fd.readlines()):
                 line = line.strip()
                 if not line:
                     continue
-                record = json.loads(line)
-                bookmark = Bookmark.from_data_dict(record['data'])
+                data = json.loads(line)
+                if data.get('deleted', False):
+                    if data['record']['uri'] in bookmarks_dict:
+                        del bookmarks_dict[data['record']['uri']]
+                    continue
+                bookmark = Bookmark.from_data_dict(data['record'])
                 if not isinstance(bookmark, Bookmark):
                     logger.error("%s %d: %s", bookmark, idx, line)
                     continue
                 if not _filter(bookmark):
                     continue
-                if record.get('deleted', False):
-                    bookmarks_dict[bookmark.uri] = bookmark
-                elif bookmark.uri in bookmarks_dict:
-                    del bookmarks_dict[bookmark.uri]
+                bookmarks_dict[bookmark.uri] = bookmark
         return list(bookmarks_dict.values())
 
     def save(self, bookmarks: list[Bookmark]):
@@ -670,11 +672,12 @@ class JsonlStorage(IStorage):
 
     def _save(self, bookmarks: list[Bookmark], deleted=False):
         with self:
+            self._fd.seek(0, os.SEEK_END)
             for bookmark in bookmarks:
-                data = json.dumps({
+                data = {
                     "record": bookmark.data_dict() if not deleted else {'uri': bookmark.uri, 'title': bookmark.title},
                     "deleted": deleted,
-                })
+                }
                 self._fd.write(json.dumps(data) + "\n")
 
     def load(self) -> list[Bookmark]:
@@ -699,18 +702,18 @@ def add_bookmark(args):
     get_all_info(bookmark, get_title=True)
     if not bookmark.title:
         bookmark.title = bookmark.uri
-    SqliteStorage(args.db).add(bookmark)
+    get_storage(args.storage).add(bookmark)
 
 
 def remove_bookmark(args):
-    bookmarks = SqliteStorage(args.db).remove(args.uri, args.title)
+    bookmarks = get_storage(args.storage).remove(args.uri, args.title)
     logger.info("total %d deleted", len(bookmarks))
     for bookmark in bookmarks:
         logger.info("%s(%s) deleted", bookmark.uri, bookmark.title)
 
 
 def update_icon(args):
-    storage = SqliteStorage(args.db)
+    storage = get_storage(args.storage)
     bookmarks = storage.load()
     get_all_info(bookmarks, icon_cache_dir=args.icon_cache_dir, force=True)
     storage.update(bookmarks, fields=["icon_data_uri", "icon_uri"])
@@ -718,7 +721,7 @@ def update_icon(args):
 
 
 def query_bookmark(args):
-    storage = SqliteStorage(args.db)
+    storage = get_storage(args.storage)
     key_an = "title" if args.title else "uri"
     dnf = [[(key_an, "like", f"%{getattr(args, key_an)}%")]]
     bookmarks = storage.query(dnf)
@@ -732,7 +735,7 @@ def query_bookmark(args):
 def modify_bookmark(args):
     key_an = "title" if args.title else "uri"
     dnf = [[(key_an, "like", f"%{getattr(args, key_an)}%")]]
-    storage = SqliteStorage(args.db)
+    storage = get_storage(args.storage)
     bookmarks = storage.query(dnf)
     assert len(bookmarks) == 1
     fields = []
@@ -760,6 +763,20 @@ def modify_bookmark(args):
         print("nothing to update")
 
 
+def get_storage(path: str):
+    if path.endswith(".db"):
+        return SqliteStorage(path)
+    if path.endswith(".jsonl"):
+        return JsonlStorage(path)
+    raise ValueError(f"Unsupported storage: {path}")
+
+
+def resave(args):
+    src = get_storage(args.src)
+    dst = get_storage(args.dst)
+    dst.save(src.load())
+
+
 def main():
     browser_mapping = {
         'firefox': {
@@ -775,11 +792,12 @@ def main():
             'get_default': get_chromium
         }
     }
+
     parser = argparse.ArgumentParser(add_help=True)
     sub_parser = parser.add_subparsers(dest="action")
     convert_parser = sub_parser.add_parser("convert")
     convert_parser.add_argument('-b', '--browser', dest='browser', required=True, choices=list(browser_mapping.keys()))
-    convert_parser.add_argument('db', help='/path/to/db')
+    convert_parser.add_argument('storage', help='/path/to/storage')
     convert_parser.add_argument('-i', dest='input_path', required=False, default=None,
                                 help='/path/to/bookmarks/file, if not supplied, the default (across the browser) will be used.')
     convert_parser.add_argument('-p', '--path-filter', metavar='PATH_FILTER', dest='path_filters', default=[], action='append',
@@ -791,28 +809,33 @@ def main():
     convert_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
     convert_parser.add_argument('-v', '--verbose', action='count', default=0)
 
+    resave_parser = sub_parser.add_parser("resave")
+    resave_parser.add_argument('-v', '--verbose', action='count', default=0)
+    resave_parser.add_argument("src", help="/path/to/source")
+    resave_parser.add_argument("dst", help="/path/to/destination")
+
     render_parser = sub_parser.add_parser("render")
-    render_parser.add_argument("db", help='/path/to/db')
+    render_parser.add_argument('storage', help='/path/to/storage')
     render_parser.add_argument("output_path", help='/path/to/the/generate/html')
     render_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
     render_parser.add_argument('-v', '--verbose', action='count', default=0)
 
     query_parser = sub_parser.add_parser("query")
-    query_parser.add_argument("db", help='/path/to/db')
+    query_parser.add_argument('storage', help='/path/to/storage')
     query_key_group = query_parser.add_mutually_exclusive_group(required=True)
     query_key_group.add_argument("--title")
     query_key_group.add_argument("--uri")
     query_parser.add_argument('-v', '--verbose', action='count', default=0)
 
     add_parser = sub_parser.add_parser("add")
-    add_parser.add_argument("db", help="/path/to/db")
+    add_parser.add_argument('storage', help='/path/to/storage')
     add_parser.add_argument("--title", help="title", required=False)
     add_parser.add_argument("--uri", help="uri", required=True)
     add_parser.add_argument("--tag", metavar='TAG', dest='tags', default=[], action='append', required=True)
     add_parser.add_argument('-v', '--verbose', action='count', default=0)
 
     remove_parser = sub_parser.add_parser("remove")
-    remove_parser.add_argument("db", help="/path/to/db")
+    remove_parser.add_argument('storage', help='/path/to/storage')
     remove_key_group = remove_parser.add_mutually_exclusive_group(required=True)
     remove_key_group.add_argument("--title", help="title")
     remove_key_group.add_argument("--uri", help="uri")
@@ -820,7 +843,7 @@ def main():
     remove_parser.add_argument('-v', '--verbose', action='count', default=0)
 
     modify_parser = sub_parser.add_parser("modify")
-    modify_parser.add_argument("db", help="/path/to/db")
+    modify_parser.add_argument('storage', help='/path/to/storage')
     modify_parser.add_argument("-v", "--verbose", action='count', default=0)
     modify_key_group = modify_parser.add_mutually_exclusive_group(required=True)
     modify_key_group.add_argument("--title", help="title")
@@ -833,7 +856,7 @@ def main():
     modify_value_group.add_argument("--icon-uri")
 
     update_icon_parser = sub_parser.add_parser("update-icon")
-    update_icon_parser.add_argument("db", help="/path/to/db")
+    update_icon_parser.add_argument('storage', help='/path/to/storage')
     update_icon_parser.add_argument('--icon-cache', dest='icon_cache_dir', default=None,
                                     help='use the cache dir for icons')
     update_icon_parser.add_argument('-v', '--verbose', action='count', default=0)
@@ -854,22 +877,22 @@ def main():
             logger.error('%s is not a directory!', args.icon_cache_dir)
             sys.exit(1)
 
-        if os.path.exists(args.db):
-            logger.warning('%s exists!', args.db)
-            if not args.yes and input(f'Do you want to append "{args.db}"?[Yy/Nn]').lower() != 'y':
+        if os.path.exists(args.storage):
+            logger.warning('%s exists!', args.storage)
+            if not args.yes and input(f'Do you want to append "{args.storage}"?[Yy/Nn]').lower() != 'y':
                 sys.exit(1)
 
         folder = browser_mapping[args.browser]['loader'](args.input_path, args.skip_empty)
         get_all_info(folder, args.path_filters, args.icon_cache_dir)
         bookmarks, _ = convert2list_with_tags(folder, args.path_filters)
-        SqliteStorage(args.db).save(bookmarks)
+        get_storage(args.storage).save(bookmarks)
     elif args.action == "render":
         if os.path.exists(args.output_path):
             logger.warning('%s exists!', args.output_path)
             if not args.yes and input(f'Do you want to overwrite "{args.output_path}"?[Yy/Nn]').lower() != 'y':
                 sys.exit(1)
         with open(args.output_path, 'w+') as of:
-            bookmarks = SqliteStorage(args.db).load()
+            bookmarks = get_storage(args.storage).load()
             html = render(bookmarks)
             of.write(html)
     elif args.action == "query":
@@ -882,6 +905,8 @@ def main():
         modify_bookmark(args)
     elif args.action == "update-icon":
         update_icon(args)
+    elif args.action == "resave":
+        resave(args)
 
 
 HTML_TMPL = '''<html lang="zh-CN">
