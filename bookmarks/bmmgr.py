@@ -770,7 +770,7 @@ class JsonlStorage(IStorage):
                 else:
                     return True
             return False
-        bookmarks_dict = {}
+        bookmarks_record_dict = {}
         with self:
             self._fd.seek(0, os.SEEK_SET)
             for idx, line in enumerate(self._fd.readlines()):
@@ -779,17 +779,24 @@ class JsonlStorage(IStorage):
                     continue
                 data = json.loads(line)
                 if data.get('deleted', False):
-                    if data['record']['uri'] in bookmarks_dict:
-                        del bookmarks_dict[data['record']['uri']]
+                    if data['record']['uri'] in bookmarks_record_dict:
+                        del bookmarks_record_dict[data['record']['uri']]
                     continue
-                bookmark = Bookmark.from_data_dict(data['record'])
-                if not isinstance(bookmark, Bookmark):
-                    logger.error("%s %d: %s", bookmark, idx, line)
-                    continue
-                if not _filter(bookmark):
-                    continue
-                bookmarks_dict[bookmark.uri] = bookmark
-        return list(bookmarks_dict.values())
+                if data['record']['uri'] not in bookmarks_record_dict:
+                    bookmarks_record_dict[data['record']['uri']] = data['record']
+                else:
+                    bookmarks_record_dict[data['record']['uri']].update(data['record'])
+
+        bookmarks = []
+        for bookmark_record in bookmarks_record_dict.values():
+            bookmark = Bookmark.from_data_dict(bookmark_record)
+            if not isinstance(bookmark, Bookmark):
+                logger.error("%s %d: %s", bookmark)
+                continue
+            if not _filter(bookmark):
+                continue
+            bookmarks.append(bookmark)
+        return bookmarks
 
     def save(self, bookmarks: list[Bookmark]):
         self._save(bookmarks, False)
