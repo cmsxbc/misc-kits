@@ -407,7 +407,7 @@ def render(bookmarks: list[Bookmark]) -> str:
         icon = b.icon_data_uri if b.icon_data_uri else get_svg_uri(b)
         icon_html = f'<img src="{icon}" width="64" height="64" />'
 
-        tags_html = ''.join(f'<div class="tag" data-name="{escape_element(tag)}">{escape_element(tag)}</div>' for tag in b.tags)
+        tags_html = ''.join(f'<div class="tag" data-name="{escape_element(tag)}">{escape_element(tag)}</div>' for tag in sorted(b.tags))
 
         return (
             '<div class="bookmark">'
@@ -420,7 +420,7 @@ def render(bookmarks: list[Bookmark]) -> str:
     context = {
         'tags': ''.join(
             f'<div class="tag" data-name="{escape_element(n)}"><span>{escape_element(n)}</span><span>{c}</span></div>'
-            for n, c in tags.items()),
+            for n, c in sorted(tags.items(), key=lambda x: -x[1])),
         'bookmarks': ''.join(_(b) for b in bookmarks)
     }
 
@@ -460,11 +460,12 @@ def render(bookmarks: list[Bookmark]) -> str:
                 grid-auto-rows: max-content;
                 display: grid;
                 grid-template-columns: 64px 1fr;
-                gap: 1vw;
+                gap: 0.3vw;
                 grid-template-areas:
-                    "a b b b b"
-                    "a c c c c"
-                    "a c c c c";
+                    "a b b b b b"
+                    "a c c c c c"
+                    "a c c c c c"
+                    "a c c c c c";
                 align-items: start;
                 border: solid 2px;
                 border-image: linear-gradient(167deg, rgba(0, 216, 247, 0) 50%, rgba(0, 216, 247, 1) 100%) 2 2 2 2;
@@ -484,6 +485,8 @@ def render(bookmarks: list[Bookmark]) -> str:
             .bookmark .tags {
                 justify-self: start;
                 grid-area: c;
+                justify-content: start;
+                gap: 0.1vw;
             }
             .bookmark p {
                 margin: 0;
