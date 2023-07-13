@@ -9,6 +9,7 @@ import io
 import fcntl
 import argparse
 import typing
+import zipfile
 import urllib.parse
 import json
 import dataclasses
@@ -636,9 +637,11 @@ class SqliteStorage(IStorage):
 
     def __enter__(self):
         self._connect()
+        self._conn.__enter__()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        self._conn.__exit__(exc_type, exc_val, exc_tb)
         self._disconnect()
         return
 
@@ -649,7 +652,7 @@ class SqliteStorage(IStorage):
         sql = f"SELECT * FROM bookmarks WHERE {where_sql}"
         logger.debug("query sql: %s", sql)
         params = tuple(value for conditions in dnf for _, _, value in conditions)
-        with self, self._conn:
+        with self:
             return [
                 self._row2bookmark(row) for row in self._conn.execute(sql, params)
             ]
@@ -657,12 +660,12 @@ class SqliteStorage(IStorage):
 
     def save(self, bookmarks: list[Bookmark]):
         bookmark_tuples = [b.to_sqlite_tuple() for b in bookmarks]
-        with self, self._conn:
+        with self:
             self._conn.execute("CREATE TABLE IF NOT EXISTS bookmarks(title, uri, icon_uri, icon_data_uri, tags)")
             self._conn.executemany("INSERT INTO bookmarks VALUES (?,?,?,?,?)", bookmark_tuples)
 
     def load(self) -> list[Bookmark]:
-        with self, self._conn:
+        with self:
             return [
                 self._row2bookmark(row) for row in self._conn.execute("SELECT * FROM bookmarks")
             ]
@@ -673,7 +676,7 @@ class SqliteStorage(IStorage):
             if len(rows) > 0:
                 raise ValueError(f"Duplicate for {an}={getattr(bookmark, an)}")
 
-        with self, self._conn:
+        with self:
             _check_dup("title")
             _check_dup("uri")
             self._conn.execute("INSERT INTO bookmarks VALUES (?,?,?,?,?)", bookmark.to_sqlite_tuple())
@@ -686,7 +689,7 @@ class SqliteStorage(IStorage):
         else:
             key = uri
             key_an = "uri"
-        with self, self._conn:
+        with self:
             cur = self._conn.execute(f"SELECT * FROM bookmarks WHERE {key_an}=?", (key,))
             bookmarks = [self._row2bookmark(row) for row in cur]
             if len(bookmarks) > 0:
@@ -706,7 +709,7 @@ class SqliteStorage(IStorage):
         def _to_params(b):
             return tuple(map(lambda x: getattr(b, x) if x != "tags" else ";".join(getattr(b, "tags")), fields4params))
 
-        with self, self._conn:
+        with self:
             for bookmark in bookmarks:
                 if only_icon and not bookmark.icon_updated:
                     continue
@@ -732,7 +735,6 @@ class SqliteStorage(IStorage):
 class JsonlStorage(IStorage):
     def __init__(self, filepath):
         self._filepath = filepath
-
         self._fd: typing.Optional[io.TextIOBase] = None
 
     def _open(self):
@@ -747,6 +749,7 @@ class JsonlStorage(IStorage):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        assert self._fd
         fd = self._fd
         self._fd = None
         fcntl.lockf(fd.fileno(), fcntl.LOCK_UN)
@@ -830,11 +833,53 @@ class JsonlStorage(IStorage):
         self._save(bookmarks, False)
 
 
+class SplitIconJsonlStorage(JsonlStorage):
+
+    def __init__(self, dirpath: str):
+        if not os.path.exists(dirpath):
+            os.makedirs(dirpath, exist_ok=True)
+        if not os.path.isdir(dirpath):
+            raise ValueError("SplitIconJsonl need a director")
+        jsonl_path = os.path.join(dirpath, "bookmarks.jsonl")
+        icon_zip_path = os.path.join(dirpath, "icons.zip")
+        # if not os.path.exists(jsonl_path):
+        #     raise ValueError(f"bookmarks.jsonl dose not exist: {jsonl_path}")
+        # if not os.path.exists(icon_zip_path):
+        #     raise ValueError(f"icons.zip dose not exist: {icon_zip_path}")
+        super().__init__(jsonl_path)
+        self._icon_zip_path = icon_zip_path
+
+    def _query(self, dnf: typing.Iterable[typing.Iterable[tuple[str, str, str]]]) -> list[Bookmark]:
+        bookmarks = super()._query(dnf)
+        with zipfile.ZipFile(self._icon_zip_path, "a") as zf:
+            for bookmark in bookmarks:
+                if bookmark.icon_data_uri:
+                    key: str = bookmark.icon_data_uri
+                    bookmark.icon_data_uri = zf.read(key).decode('utf-8')
+        return bookmarks
+
+    def _save(self, bookmarks: list[Bookmark], deleted=False):
+        icon_data_uris: list[str] = []
+        with zipfile.ZipFile(self._icon_zip_path, "a") as zf:
+            for bookmark in bookmarks:
+                icon_data_uris.append(bookmark.icon_data_uri)
+                if bookmark.icon_data_uri:
+                    key = hashlib.md5(bookmark.uri.encode()).hexdigest()
+                    zf.writestr(key, bookmark.icon_data_uri)
+                    bookmark.icon_data_uri = key
+        try:
+            super()._save(bookmarks, deleted)
+        finally:
+            for icon_data_uri, bookmark in zip(icon_data_uris, bookmarks):
+                bookmark.icon_data_uri = icon_data_uri
+
 def get_storage(path: str):
     if path.endswith(".db"):
         return SqliteStorage(path)
     if path.endswith(".jsonl"):
         return JsonlStorage(path)
+    if os.path.isdir(path):
+        return SplitIconJsonlStorage(path)
     raise ValueError(f"Unsupported storage: {path}")
 
 
