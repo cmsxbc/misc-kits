@@ -398,10 +398,14 @@ def convert2list_with_tags(folder: Folder, paths: list[str]) -> typing.Tuple[lis
 
 
 def render(bookmarks: list[Bookmark]) -> str:
-    tags = collections.defaultdict(lambda: 0)
+    categorical_tags = collections.defaultdict(lambda: collections.defaultdict(lambda: 0))
     for b in bookmarks:
-        for t in b.tags:
-            tags[t] += 1
+        for tag in b.tags:
+            if ":" in tag:
+                category, _ = tag.split(":", maxsplit=1)
+            else:
+                category = ''
+            categorical_tags[category][tag] += 1
 
     def _(b):
         icon = b.icon_data_uri if b.icon_data_uri else get_svg_uri(b)
@@ -417,10 +421,22 @@ def render(bookmarks: list[Bookmark]) -> str:
             '</div>'
         )
 
+    tag_htmls = []
+    for category, tags in sorted(categorical_tags.items(), key=lambda x: x[0]):
+        if category:
+            tag_htmls.append(f'<details class=""><summary>{category}</summary>')
+        tag_htmls.append('<div class="tags">')
+        tag_htmls.append(''.join(
+            f'<div class="tag" data-name="{escape_element(n)}" data-category="{category}"><span>{escape_element(n)}</span><span>{c}</span></div>'
+            for n, c in sorted(tags.items(), key=lambda x: -x[1])
+        ))
+        tag_htmls.append('</div>')
+        if category:
+            tag_htmls.append('</details>')
+
+
     context = {
-        'tags': ''.join(
-            f'<div class="tag" data-name="{escape_element(n)}"><span>{escape_element(n)}</span><span>{c}</span></div>'
-            for n, c in sorted(tags.items(), key=lambda x: -x[1])),
+        'tags': ''.join(tag_htmls),
         'bookmarks': ''.join(_(b) for b in bookmarks)
     }
 
@@ -500,7 +516,7 @@ def render(bookmarks: list[Bookmark]) -> str:
         </style>
     </head>
     <body>
-        <div class="tags nav">
+        <div class="nav">
         {% tags %}
         </div>
         <div class="bookmarks">
@@ -523,6 +539,9 @@ def render(bookmarks: list[Bookmark]) -> str:
                 other_tag_e.classList.remove('active');
                 if (activate && other_tag_e.dataset.name == tag) {
                     other_tag_e.classList.add('active');
+                    if (other_tag_e.dataset.hasOwnProperty('category')) {
+                        other_tag_e.parentElement.parentElement.open = true;
+                    }
                 }
             }
             if (activate) {
