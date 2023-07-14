@@ -895,11 +895,27 @@ class SplitIconJsonlStorage(JsonlStorage):
             for icon_data_uri, bookmark in zip(icon_data_uris, bookmarks):
                 bookmark.icon_data_uri = icon_data_uri
 
+
+class NoIconDataJsonlStorage(JsonlStorage):
+    def _save(self, bookmarks: list[Bookmark], deleted=False):
+        icon_data_uris: list[str] = []
+        for bookmark in bookmarks:
+            icon_data_uris.append(bookmark.icon_data_uri)
+            bookmark.icon_data_uri = ''
+        try:
+            super()._save(bookmarks, deleted)
+        finally:
+            for icon_data_uri, bookmark in zip(icon_data_uris, bookmarks):
+                bookmark.icon_data_uri = icon_data_uri
+
+
 def get_storage(path: str):
     if path.endswith(".db"):
         return SqliteStorage(path)
     if path.endswith(".jsonl"):
         return JsonlStorage(path)
+    if path.endswith(".njsonl"):
+        return NoIconDataJsonlStorage(path)
     if os.path.isdir(path):
         return SplitIconJsonlStorage(path)
     raise ValueError(f"Unsupported storage: {path}")
@@ -1111,8 +1127,9 @@ def register_render(render_parser):
         if not cb(args):
             sys.exit(1)
         with open(args.output_path, 'w+') as of:
-            bookmarks = get_storage(args.storage).load()
-            if args.update_icon:
+            storage = get_storage(args.storage)
+            bookmarks = storage.load()
+            if args.update_icon or isinstance(storage, NoIconDataJsonlStorage):
                 get_all_info(bookmarks, icon_cache_dir=args.icon_cache_dir)
             html = render(bookmarks)
             of.write(html)
