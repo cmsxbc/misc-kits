@@ -905,15 +905,30 @@ def get_storage(path: str):
     raise ValueError(f"Unsupported storage: {path}")
 
 
+def add_icon_cache_param(parser) -> typing.Callable[[argparse.Namespace], bool]:
+    def _(args):
+        if args.icon_cache_dir and not os.path.isdir(args.icon_cache_dir):
+            logger.error('%s is not a directory!', args.icon_cache_dir)
+            return False
+        return True
+
+    parser.add_argument('--icon-cache', dest='icon_cache_dir', default=None,
+                            help='use the cache dir for icons')
+    return _
+
+
 def register_add(add_parser):
     add_parser.add_argument('storage', help='/path/to/storage')
     add_parser.add_argument("--title", help="title", required=False)
     add_parser.add_argument("--uri", help="uri", required=True)
     add_parser.add_argument("--tag", metavar='TAG', dest='tags', default=[], action='append', required=True)
+    cb = add_icon_cache_param(add_parser)
 
     def add_bookmark(args):
+        if not cb(args):
+            sys.exit(1)
         bookmark = Bookmark(title=args.title, uri=args.uri, parent='', tags=args.tags)
-        get_all_info(bookmark, get_title=True)
+        get_all_info(bookmark, icon_cache_dir=args.icon_cache_dir, get_title=True)
         if not bookmark.title:
             bookmark.title = bookmark.uri
         get_storage(args.storage).add(bookmark)
@@ -937,10 +952,11 @@ def register_remove(remove_parser):
 
 def register_update_icon(update_icon_parser):
     update_icon_parser.add_argument('storage', help='/path/to/storage')
-    update_icon_parser.add_argument('--icon-cache', dest='icon_cache_dir', default=None,
-                                    help='use the cache dir for icons')
+    cb = add_icon_cache_param(update_icon_parser)
 
     def update_icon(args):
+        if not cb(args):
+            sys.exit(1)
         storage = get_storage(args.storage)
         bookmarks = storage.load()
         get_all_info(bookmarks, icon_cache_dir=args.icon_cache_dir, force=True)
@@ -978,8 +994,11 @@ def register_modify(modify_parser):
     modify_tag_group.add_argument("--add-tag", metavar="TAG", dest='add_tags', default=[], action='append')
     modify_tag_group.add_argument("--remove-tag", metavar="TAG", dest='remove_tags', default=[], action='append')
     modify_value_group.add_argument("--icon-uri")
+    cb = add_icon_cache_param(modify_parser)
 
     def modify_bookmark(args):
+        if not cb(args):
+            sys.exit(1)
         key_an = "title" if args.title else "uri"
         dnf = [[(key_an, "like", f"%{getattr(args, key_an)}%")]]
         storage = get_storage(args.storage)
@@ -989,7 +1008,7 @@ def register_modify(modify_parser):
         if args.icon_uri:
             for b in bookmarks:
                 b.icon_uri = args.icon_uri
-            get_all_info(bookmarks)
+            get_all_info(bookmarks, icon_cache_dir=args.icon_cache_dir, force=True)
             if bookmarks[0].icon_updated:
                 fields.extend(("icon_data_uri", "icon_uri"))
         if args.tags:
@@ -1039,6 +1058,18 @@ def register_convert(convert_parser):
         }
     }
 
+    convert_parser.add_argument('-b', '--browser', dest='browser', required=True, choices=list(browser_mapping.keys()))
+    convert_parser.add_argument('storage', help='/path/to/storage')
+    convert_parser.add_argument('-i', dest='input_path', required=False, default=None,
+                                help='/path/to/bookmarks/file, if not supplied, the default (across the browser) will be used.')
+    convert_parser.add_argument('-p', '--path-filter', metavar='PATH_FILTER', dest='path_filters', default=[],
+                                action='append',
+                                help='filter bookmarks by path, use "." to split parent and child. apply multiple times works as "OR"')
+    convert_parser.add_argument('--skip-empty', dest='skip_empty', action='store_true',
+                                help='skip empty folder')
+    cb = add_icon_cache_param(convert_parser)
+    convert_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
+
     def _(args):
 
         if args.input_path is None:
@@ -1049,8 +1080,7 @@ def register_convert(convert_parser):
             logger.error('%s does not exist!', args.input_path)
             sys.exit(1)
 
-        if args.icon_cache_dir and not os.path.isdir(args.icon_cache_dir):
-            logger.error('%s is not a directory!', args.icon_cache_dir)
+        if not cb(args):
             sys.exit(1)
 
         if os.path.exists(args.storage):
@@ -1063,35 +1093,30 @@ def register_convert(convert_parser):
         bookmarks, _ = convert2list_with_tags(folder, args.path_filters)
         get_storage(args.storage).save(bookmarks)
 
-    convert_parser.add_argument('-b', '--browser', dest='browser', required=True, choices=list(browser_mapping.keys()))
-    convert_parser.add_argument('storage', help='/path/to/storage')
-    convert_parser.add_argument('-i', dest='input_path', required=False, default=None,
-                                help='/path/to/bookmarks/file, if not supplied, the default (across the browser) will be used.')
-    convert_parser.add_argument('-p', '--path-filter', metavar='PATH_FILTER', dest='path_filters', default=[],
-                                action='append',
-                                help='filter bookmarks by path, use "." to split parent and child. apply multiple times works as "OR"')
-    convert_parser.add_argument('--skip-empty', dest='skip_empty', action='store_true',
-                                help='skip empty folder')
-    convert_parser.add_argument('--icon-cache', dest='icon_cache_dir', default=None,
-                                help='use the cache dir for icons')
-    convert_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
     return _
 
 
 def register_render(render_parser):
+    render_parser.add_argument('storage', help='/path/to/storage')
+    render_parser.add_argument("output_path", help='/path/to/the/generate/html')
+    render_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
+    render_parser.add_argument('-u', '--update-icon', dest='update_icon', action='store_true', help='update icon before render')
+    cb = add_icon_cache_param(render_parser)
+
     def _(args):
         if os.path.exists(args.output_path):
             logger.warning('%s exists!', args.output_path)
             if not args.yes and input(f'Do you want to overwrite "{args.output_path}"?[Yy/Nn]').lower() != 'y':
                 sys.exit(1)
+        if not cb(args):
+            sys.exit(1)
         with open(args.output_path, 'w+') as of:
             bookmarks = get_storage(args.storage).load()
+            if args.update_icon:
+                get_all_info(bookmarks, icon_cache_dir=args.icon_cache_dir)
             html = render(bookmarks)
             of.write(html)
 
-    render_parser.add_argument('storage', help='/path/to/storage')
-    render_parser.add_argument("output_path", help='/path/to/the/generate/html')
-    render_parser.add_argument('-y', '--yes', dest='yes', action='store_true', help='answer yes for all attentions')
     return _
 
 
