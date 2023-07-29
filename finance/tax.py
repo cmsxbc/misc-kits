@@ -1,5 +1,9 @@
 from __future__ import annotations
-from typing import List, Callable, Optional, Dict, Union, TypeVar, Iterable, Tuple
+
+import functools
+import operator
+import sys
+from typing import List, Callable, Optional, Dict, Union, TypeVar, Iterable, Tuple, Self
 from decimal import Decimal, DefaultContext
 from dataclasses import dataclass, field, InitVar
 from copy import deepcopy, copy
@@ -72,16 +76,16 @@ class Money:
     def __hash__(self):
         return int(self.total_fen) if not self.is_inf else 2**32
 
-    def __neg__(self):
+    def __neg__(self) -> Self:
         return self.__class__((-self.yuan, -self.fen))
 
-    def __abs__(self):
+    def __abs__(self) -> Self:
         return copy(self) if self > 0 else -self
 
-    def __copy__(self):
+    def __copy__(self) -> Self:
         return self.__class__((copy(self.yuan), copy(self.fen)))
 
-    def __add__(self, other: Union[_Money, Money]):
+    def __add__(self, other: Union[_Money, Money]) -> Self:
         if not isinstance(other, self.__class__):
             other = self.__class__(other)
         yuan = self.yuan + other.yuan
@@ -91,10 +95,10 @@ class Money:
             yuan += 1
         return self.__class__((yuan, fen))
 
-    def __radd__(self, other):
+    def __radd__(self, other) -> Self:
         return self + other
 
-    def __sub__(self, other):
+    def __sub__(self, other) -> Self:
         if not isinstance(other, self.__class__):
             other = self.__class__(other)
         yuan = self.yuan - other.yuan
@@ -104,19 +108,19 @@ class Money:
             yuan -= 1
         return self.__class__((yuan, fen))
 
-    def __rsub__(self, other):
+    def __rsub__(self, other) -> Self:
         return -(self - other)
 
-    def __mul__(self, other: Rate):
+    def __mul__(self, other: Rate) -> Self:
         assert isinstance(other, (int, Decimal)), f"only can mul by int, Decimal; {other}, {other.__class__.__name__} got"
         yuan = self.yuan * other
         fen = self.fen * other / self.m(100)
         return self.__class__(yuan) + self.__class__(fen)
 
-    def __rmul__(self, other: Rate):
+    def __rmul__(self, other: Rate) -> Self:
         return self * other
 
-    def __truediv__(self, other: Rate):
+    def __truediv__(self, other: Rate) -> Self:
         return self.__class__(self.yuan / other) + self.__class__(self.fen / other / self.m(100))
 
     def __ge__(self, other: Union[_Money, Money]) -> bool:
@@ -124,22 +128,22 @@ class Money:
             other = self.__class__(other)
         return self.total_fen >= other.total_fen
 
-    def __gt__(self, other: Union[_Money, Money]):
+    def __gt__(self, other: Union[_Money, Money]) -> bool:
         if not isinstance(other, self.__class__):
             other = self.__class__(other)
         return self.total_fen > other.total_fen
 
-    def __eq__(self, other: Union[_Money, Money]):
+    def __eq__(self, other: Union[_Money, Money]) -> bool:
         if not isinstance(other, self.__class__):
             other = self.__class__(other)
         return self.total_fen == other.total_fen
 
-    def __le__(self, other: Union[_Money, Money]):
+    def __le__(self, other: Union[_Money, Money]) -> bool:
         if not isinstance(other, self.__class__):
             other = self.__class__(other)
         return self.total_fen <= other.total_fen
 
-    def __lt__(self, other: Union[_Money, Money]):
+    def __lt__(self, other: Union[_Money, Money]) -> bool:
         if not isinstance(other, self.__class__):
             other = self.__class__(other)
         return self.total_fen < other.total_fen
@@ -179,6 +183,7 @@ DEFAULT_BASE_LIMIT = m("34188")
 DEFAULT_START = m("5000")
 DEFAULT_FUND_RATE: Rate = r('0.07')
 DEFAULT_INSURANCE_RATE: Rate = r('0.105')
+DEFAULT_BASE_LIMIT_INCREASE_RATE: Rate = r('1.1')
 
 
 @dataclass
@@ -274,6 +279,10 @@ class TaxDetail:
     def validate(self):
         return self.salary - self.income == self.tax + self.fund + self.insurance
 
+    @staticmethod
+    def head(func: Callable = print):
+        func("Income = Salary - (Fund + Insurance) - Tax")
+
     def pretty(self, func: Callable = print, idx: Optional[int] = None):
         pretty = f"{self.income} = {self.salary} - ({self.fund} + {self.insurance}) - {self.tax}"
         if idx is not None:
@@ -336,8 +345,9 @@ class MonthlySalary:
     def __post_init__(self):
         assert isinstance(self.month, Month), f"month should be `Month`, but `{type(self.month)}` got!!"
 
-    def get_total(self):
-        return sum(self.salaries)
+    def get_total(self) -> Money:
+        # return sum(self.salaries)
+        return functools.reduce(operator.add, self.salaries)
 
 
 @dataclass
@@ -369,7 +379,7 @@ class YearlyPackage:
         return [monthly_salary.get_total() for monthly_salary in self.monthly_salaries]
 
     def get_total_bonus(self) -> Bonus:
-        return sum(self.bonuses)
+        return functools.reduce(operator.add, self.bonuses)
 
 
 @dataclass
@@ -407,21 +417,23 @@ class Taxpayer:
     insurance_base_limit: InitVar[tuple[Money, Money] | Money] = DEFAULT_BASE_LIMIT
     fund_bl: tuple[Money, Money] = field(init=False)
     insurance_bl: tuple[Money, Money] = field(init=False)
+    BASE_LIMIT_MUTATIONAL_SITE: int = field(init=False, default=6)
 
     def __post_init__(self, fund_base_limit: tuple[Money, Money] | Money, insurance_base_limit: tuple[Money, Money] | Money):
-        if isinstance(fund_base_limit, tuple):
-            self.fund_bl = tuple(fund_base_limit[:2])
-        else:
-            self.fund_bl = (fund_base_limit, fund_base_limit * r("1.1"))
+        def _d(name, bl):
+            if isinstance(bl, tuple):
+                return tuple(bl[:2])
+            else:
+                ret = bl, bl * DEFAULT_BASE_LIMIT_INCREASE_RATE
+                print(f'use {name}: {ret}', file=sys.stderr)
+            return ret
+        self.fund_bl = _d("fund", fund_base_limit)
         assert len(self.fund_bl) == 2
-        if isinstance(insurance_base_limit, tuple):
-            self.insurance_bl = tuple(insurance_base_limit[:2])
-        else:
-            self.insurance_bl = (insurance_base_limit, insurance_base_limit * r("1.1"))
+        self.insurance_bl = _d("insurance", insurance_base_limit)
         assert len(self.insurance_bl) == 2
 
     def calc_salaries(self, salaries: Union[List[Salary], YearlyPackage], additional_free: Money = m('0'),
-                      force_fund_base: Money = m('inf'), force_insurance_base: Money = m('inf'), tax_klass=AccTax) -> Union[AccTax, YearlyTax]:
+                      force_fund_base: Optional[Money] = None, force_insurance_base: Optional[Money] = None, tax_klass=AccTax) -> Union[AccTax, YearlyTax]:
         if isinstance(salaries, YearlyPackage):
             salaries = salaries.get_salaries()
         assert len(salaries) == 12, "only support one-year monthly salaries"
@@ -429,9 +441,9 @@ class Taxpayer:
         tax_table = iter(self.salary_tax_rate)
         cur_tax_step = next(tax_table)
         for idx, salary in enumerate(salaries):
-            base_limit_idx = 0 if idx < 6 else 1
-            fund_base = min(self.fund_bl[base_limit_idx], force_fund_base, salary)
-            insurance_base = min(self.insurance_bl[base_limit_idx], force_insurance_base, salary)
+            base_limit_idx = 0 if idx < self.BASE_LIMIT_MUTATIONAL_SITE else 1
+            fund_base = min(self.fund_bl[base_limit_idx], force_fund_base if force_fund_base is not None else salary)
+            insurance_base = min(self.insurance_bl[base_limit_idx], force_insurance_base if force_insurance_base is not None else salary)
             fund = fund_base * self.fund_rate
             insurance = insurance_base * self.insurance_rate
 
@@ -540,7 +552,20 @@ def base_limit(param):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="A simple tools to calculate tax")
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="A simple tools to calculate tax.",
+        epilog=f"""
+TIPS:
+    0. always supply '--base-limit' with latest **two** average wage in society reported by gov.
+        0.0) It's because from Jane to June, the value of the year before last year would be used; and from July to end, the value of last year would be used.
+        0.1) If it's time before July (not included) in the year, you can only supply one, and 1.1 rate will be applied as a predict
+        0.2) If it's time After July (included) in the year, you should supply two for accurate value.
+    1. first year employee, or more years employee without salary changing more than one year, or want to calculate new salary plan in new company
+        python {sys.argv[0]} <salary>
+    2. second year employee or more, with salary change.
+        python {sys.argv[0]} --force-base <your last year average salary> <salary>
+""")
     parser.add_argument('salaries', metavar='Salary', nargs='+', action=SalaryAction, help="Money | Money:months, total months must be 12")
     parser.add_argument('-b', '--bonus', metavar='Bonus', dest='bonuses', action='append', type=Bonus, default=[])
     parser.add_argument('-d', '--detail', action='store_true')
@@ -550,9 +575,10 @@ def main():
     payer_group.add_argument('--fund-rate', dest='payer_args', action=DictAction, default={}, type=r, metavar='Rate', help=f'default={DEFAULT_FUND_RATE}')
     payer_group.add_argument('--insurance-rate', dest='payer_args', action=DictAction, default={}, type=r, metavar='Rate', help=f'default={DEFAULT_INSURANCE_RATE}')
     limit_group = parser.add_argument_group("base limit (part of payer config)")
-    limit_group.add_argument('--base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={DEFAULT_BASE_LIMIT}, conflict with --*-base-limit')
-    limit_group.add_argument('--fund-base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={DEFAULT_BASE_LIMIT}, conflict with --base-limit')
-    limit_group.add_argument('--insurance-base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={DEFAULT_BASE_LIMIT}, conflict with --base-limit')
+    bl_default = (DEFAULT_BASE_LIMIT, DEFAULT_BASE_LIMIT * DEFAULT_BASE_LIMIT_INCREASE_RATE)
+    limit_group.add_argument('--base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={bl_default}, conflict with --*-base-limit')
+    limit_group.add_argument('--fund-base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={bl_default}, conflict with --base-limit')
+    limit_group.add_argument('--insurance-base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={bl_default}, conflict with --base-limit')
     calc_group = parser.add_argument_group("calc config")
     calc_group.add_argument('--additional-free', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
     force_base_group = parser.add_argument_group("force base (part of calc config)")
@@ -575,20 +601,32 @@ def main():
     if not args.bonuses:
         if args.all:
             raise ValueError('-a/--all only usable in calcuate package')
-        Taxpayer(**args.payer_args).calc_salaries(args.salaries, **args.calc_args).pretty(include_detail=args.detail)
+        acc_tax = Taxpayer(**args.payer_args).calc_salaries(args.salaries, **args.calc_args)
+        if args.detail:
+            acc_tax.head(lambda *x: print(f'No:', *x))
+        else:
+            acc_tax.head()
+        acc_tax.pretty(include_detail=args.detail)
     else:
         yp = YearlyPackage.from_list(args.salaries, args.bonuses)
         if not args.all:
-            Taxpayer(**args.payer_args).calc_package(yp, **args.calc_args).pretty(include_detail=args.detail)
+            acc_tax = Taxpayer(**args.payer_args).calc_package(yp, **args.calc_args)
+            acc_tax.head(lambda *x: print(f'No:', *x))
+            acc_tax.pretty(include_detail=args.detail)
         else:
+            first = True
             for bonus, yearly_tax in Taxpayer().calc_all_package(yp, **args.calc_args).items():
                 if not args.detail:
-                    yearly_tax.pretty(lambda *x: print(f'{bonus} as Bonus:', *x))
+                    if first:
+                        yearly_tax.head(lambda *x: print(f' ' * 19, *x))
+                        first = False
+                    yearly_tax.pretty(lambda *x: print(f'{str(bonus):>9s} as Bonus:', *x))
                 else:
                     print('='*10, bonus, 'as Bonus', '=' * 10)
+                    yearly_tax.head(lambda *x: print(f'No:', *x))
+                    first = False
                     yearly_tax.pretty(include_detail=True)
 
 
 if __name__ == '__main__':
     main()
-
