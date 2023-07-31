@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import operator
+import math
 import sys
 from typing import List, Callable, Optional, Dict, Union, TypeVar, Iterable, Tuple, Self
 from decimal import Decimal, DefaultContext
@@ -35,7 +36,7 @@ class Money:
         if isinstance(val, tuple):
             assert len(val) == 2, "tuple must have two items"
             return val[0].quantize(Decimal('1.')), val[1].quantize(Decimal('1.'))
-        yuan = self.m(val)
+        yuan = self.m(val * 100 // 100)
         fen = self.m(val * 100 % 100)
         return yuan, fen
 
@@ -66,6 +67,7 @@ class Money:
     @property
     def is_inf(self):
         return self.yuan.is_infinite()
+
 
     def __str__(self):
         return f'{self.yuan}.{abs(self.fen):0>2}' if not self.is_inf else str(self.yuan)
@@ -147,6 +149,15 @@ class Money:
         if not isinstance(other, self.__class__):
             other = self.__class__(other)
         return self.total_fen < other.total_fen
+
+    def __ceil__(self) -> Self:
+        if self._fen:
+            return self.__class__(self._yuan + 1)
+        else:
+            return self.__copy__()
+
+    def __floor__(self) -> Self:
+        return self.__class__(self._yuan)
 
 
 def m(s: _Money) -> Money:
@@ -438,20 +449,17 @@ class Taxpayer:
             salaries = salaries.get_salaries()
         assert len(salaries) == 12, "only support one-year monthly salaries"
         acc = tax_klass()
-        tax_table = iter(self.salary_tax_rate)
-        cur_tax_step = next(tax_table)
         for idx, salary in enumerate(salaries):
             base_limit_idx = 0 if idx < self.BASE_LIMIT_MUTATIONAL_SITE else 1
             fund_base = min(self.fund_bl[base_limit_idx], force_fund_base if force_fund_base is not None else salary)
             insurance_base = min(self.insurance_bl[base_limit_idx], force_insurance_base if force_insurance_base is not None else salary)
-            fund = fund_base * self.fund_rate
+            fund = math.floor(fund_base * self.fund_rate)
             insurance = insurance_base * self.insurance_rate
 
-            acc.tax_base += max(self.start, salary - fund - insurance - additional_free) - self.start
-            if acc.tax_base >= cur_tax_step.limit:
-                cur_tax_step = next(tax_table)
-
-            tax = cur_tax_step.calc(acc.tax_base) - acc.tax
+            delta_tax_base = max(self.start, salary - fund - insurance - additional_free) - self.start
+            acc.tax_base += delta_tax_base
+            acc_tax = self.salary_tax_rate.calc(acc.tax_base)
+            tax = acc_tax - acc.tax
             acc.add(TaxDetail(
                 salary=salary,
                 tax=tax,
