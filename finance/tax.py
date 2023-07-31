@@ -623,7 +623,7 @@ TIPS:
             acc_tax.pretty(include_detail=args.detail)
         else:
             first = True
-            for bonus, yearly_tax in Taxpayer().calc_all_package(yp, **args.calc_args).items():
+            for bonus, yearly_tax in Taxpayer(**args.payer_args).calc_all_package(yp, **args.calc_args).items():
                 if not args.detail:
                     if first:
                         yearly_tax.head(lambda *x: print(f' ' * 19, *x))
