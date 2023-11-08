@@ -7,6 +7,7 @@ import collections
 import dataclasses
 import enum
 import urllib.parse
+import argparse
 
 
 class VCS(enum.Enum):
@@ -87,9 +88,9 @@ def move(path: str):
     subprocess.check_call(['mv', path, repo_target])
 
 
-def update(path: str):
+def update(path: str, max_retry=3):
     try_count = 0
-    while True:
+    while try_count < max_retry:
         try_count += 1
         print(f'Try {try_count} update {path}')
         process = subprocess.run(['git', 'pull'], cwd=path)
@@ -97,14 +98,14 @@ def update(path: str):
             break
 
 
-def update_all(max_depth=3):
+def update_all(max_depth, max_retry):
     Item = collections.namedtuple("Item", ("path", "depth"))
     dir_items = [Item(".", 0)]
     while dir_items:
         item = dir_items.pop()
         git_dir = os.path.join(item.path, ".git")
         if os.path.exists(git_dir) and os.path.isdir(git_dir):
-            update(item.path)
+            update(item.path, max_retry)
         elif item.depth < max_depth:
             for sub_dir in os.listdir(item.path):
                 dir_items.append(Item(os.path.join(item.path, sub_dir), item.depth + 1))
@@ -118,8 +119,12 @@ def print_usage():
 
 if __name__ == '__main__':
     match sys.argv[1:]:
-        case ('update-all' | 'update_all', ):
-            update_all()
+        case ('update-all' | 'update_all', *args):
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--max-depth", type=int, required=False)
+            parser.add_argument("--max-retry", type=int, required=False)
+            parsed_args = parser.parse_args(args)
+            update_all(**parsed_args.__dict__)
         case ('--allow-sub-path', str(repo_uri)) | ('clone', '--allow-sub-path', str(repo_uri)):
             repo = parse(repo_uri, True)
             clone(repo)
