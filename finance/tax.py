@@ -568,6 +568,18 @@ class DictAction(argparse.Action):
         setattr(namespace, self.dest, kw)
 
 
+class DictFlagAction(DictAction):
+
+    def __init__(self, option_strings, dest, default, required=False, help=None):
+        self._opt_string = option_strings[-1]
+        super().__init__(option_strings=option_strings, dest=dest,
+                         default=default, required=required,
+                         help=help, nargs=0)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        super().__call__(parser, namespace, True, self._opt_string)
+
+
 def base_limit(param):
     if "," in param:
         return tuple(map(m, param.split(',')))
@@ -593,7 +605,6 @@ TIPS:
     parser.add_argument('-b', '--bonus', metavar='Bonus', dest='bonuses', action='append', type=Bonus, default=[])
     parser.add_argument('-d', '--detail', action='store_true')
     parser.add_argument('-a', '--all', action='store_true')
-    parser.add_argument('-p', '--can-reassemble-bonus', action='store_true')
     payer_group = parser.add_argument_group("payer config")
     payer_group.add_argument('--start', dest='payer_args', action=DictAction, default={}, type=m, metavar='Money', help=f'default={DEFAULT_START}, tax start bound')
     payer_group.add_argument('--fund-rate', dest='payer_args', action=DictAction, default={}, type=r, metavar='Rate', help=f'default={DEFAULT_FUND_RATE}')
@@ -605,6 +616,7 @@ TIPS:
     limit_group.add_argument('--insurance-base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={bl_default}, conflict with --base-limit')
     calc_group = parser.add_argument_group("calc config")
     calc_group.add_argument('--additional-free', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
+    calc_group.add_argument('-p', '--can-reassemble-bonus', dest='calc_args', default={}, action=DictFlagAction)
     force_base_group = parser.add_argument_group("force base (part of calc config)")
     force_base_group.add_argument('--force-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money', help="conflict with --force-*-base")
     force_base_group.add_argument('--force-fund-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money', help="conflict with --force-base")
@@ -622,8 +634,6 @@ TIPS:
         args.calc_args['force_fund_base'] = args.calc_args['force_base']
         args.calc_args['force_insurance_base'] = args.calc_args['force_base']
         del args.calc_args['force_base']
-    if args.can_reassemble_bonus:
-        args.calc_args['can_reassemble_bonus'] = True
     if not args.bonuses:
         if args.all:
             raise ValueError('-a/--all only usable in calcuate package')
