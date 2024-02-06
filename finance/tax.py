@@ -500,18 +500,33 @@ class Taxpayer:
 
     def calc_all_package(self, package: YearlyPackage, additional_free: Money = m('0'),
                          force_fund_base: Money = m('inf'),
-                         force_insurance_base: Money = m('inf')) -> Dict[Bonus, YearlyTax]:
+                         force_insurance_base: Money = m('inf'),
+                         can_reassemble_bonus: bool = False,
+                         ) -> Dict[Bonus, YearlyTax]:
         base_yearly_tax = self.calc_salaries(package, additional_free, force_fund_base, force_insurance_base, tax_klass=YearlyTax)
         yearly_taxes = {}
         as_bonus: None | Bonus
-        for as_bonus in itertools.chain([None], package.bonuses):
-            yearly_tax = deepcopy(base_yearly_tax)
-            for bonus in package.bonuses:
-                if bonus is as_bonus:
-                    continue
+        total_bonus = sum(package.bonuses)
+        if can_reassemble_bonus:
+            possible_bonuses = [None]
+            for step_tax_rate in self.salary_tax_rate:
+                if total_bonus > step_tax_rate.limit:
+                    possible_bonuses.append(step_tax_rate.limit)
                 else:
-                    yearly_tax.tax_base += bonus
-                    yearly_tax.add(TaxDetail(bonus, self.salary_tax_rate.calc(yearly_tax.tax_base) - yearly_tax.tax))
+                    break
+            possible_bonuses.append(total_bonus)
+        else:
+            possible_bonuses = list(itertools.chain([None], package.bonuses))
+
+        for as_bonus in possible_bonuses:
+            yearly_tax = deepcopy(base_yearly_tax)
+            if as_bonus is not None:
+                other_bonus = total_bonus - as_bonus
+            else:
+                other_bonus = total_bonus
+            if other_bonus > 0:
+                yearly_tax.tax_base += other_bonus
+                yearly_tax.add(TaxDetail(other_bonus, self.salary_tax_rate.calc(yearly_tax.tax_base) - yearly_tax.tax))
             if as_bonus is not None:
                 yearly_tax.add_bonus(self.calc_bonus(as_bonus))
             yearly_taxes[as_bonus] = yearly_tax
@@ -578,6 +593,7 @@ TIPS:
     parser.add_argument('-b', '--bonus', metavar='Bonus', dest='bonuses', action='append', type=Bonus, default=[])
     parser.add_argument('-d', '--detail', action='store_true')
     parser.add_argument('-a', '--all', action='store_true')
+    parser.add_argument('-p', '--can-reassemble-bonus', action='store_true')
     payer_group = parser.add_argument_group("payer config")
     payer_group.add_argument('--start', dest='payer_args', action=DictAction, default={}, type=m, metavar='Money', help=f'default={DEFAULT_START}, tax start bound')
     payer_group.add_argument('--fund-rate', dest='payer_args', action=DictAction, default={}, type=r, metavar='Rate', help=f'default={DEFAULT_FUND_RATE}')
@@ -606,6 +622,8 @@ TIPS:
         args.calc_args['force_fund_base'] = args.calc_args['force_base']
         args.calc_args['force_insurance_base'] = args.calc_args['force_base']
         del args.calc_args['force_base']
+    if args.can_reassemble_bonus:
+        args.calc_args['can_reassemble_bonus'] = True
     if not args.bonuses:
         if args.all:
             raise ValueError('-a/--all only usable in calcuate package')
