@@ -501,13 +501,13 @@ class Taxpayer:
     def calc_all_package(self, package: YearlyPackage, additional_free: Money = m('0'),
                          force_fund_base: Money = m('inf'),
                          force_insurance_base: Money = m('inf'),
-                         can_reassemble_bonus: bool = False,
+                         reassemble_bonus: int = -1,
                          ) -> Dict[Bonus, YearlyTax]:
-        base_yearly_tax = self.calc_salaries(package, additional_free, force_fund_base, force_insurance_base, tax_klass=YearlyTax)
+        assert -1 <= reassemble_bonus <= 12, "reassemble_bonus should be -1 (disable) or 0 (additional) or [1, 12] for merged month"
         yearly_taxes = {}
         as_bonus: None | Bonus
         total_bonus = sum(package.bonuses)
-        if can_reassemble_bonus:
+        if reassemble_bonus > -1:
             possible_bonuses = [None]
             for step_tax_rate in self.salary_tax_rate:
                 if total_bonus > step_tax_rate.limit:
@@ -519,12 +519,17 @@ class Taxpayer:
             possible_bonuses = list(itertools.chain([None], package.bonuses))
 
         for as_bonus in possible_bonuses:
-            yearly_tax = deepcopy(base_yearly_tax)
             if as_bonus is not None:
                 other_bonus = total_bonus - as_bonus
             else:
                 other_bonus = total_bonus
-            if other_bonus > 0:
+            if other_bonus > 0 and reassemble_bonus > 0:
+                cur_package = deepcopy(package)
+                cur_package.monthly_salaries[reassemble_bonus - 1].salaries.append(other_bonus)
+            else:
+                cur_package = package
+            yearly_tax = self.calc_salaries(cur_package, additional_free, force_fund_base, force_insurance_base, tax_klass=YearlyTax) # it's ok to calculate every time, as it's very cheap.
+            if other_bonus > 0 and reassemble_bonus == 0:
                 yearly_tax.tax_base += other_bonus
                 yearly_tax.add(TaxDetail(other_bonus, self.salary_tax_rate.calc(yearly_tax.tax_base) - yearly_tax.tax))
             if as_bonus is not None:
@@ -559,25 +564,23 @@ class SalaryAction(argparse.Action):
 
 
 class DictAction(argparse.Action):
+    def __init__(self, *args, **kwargs):
+        if 'default' in kwargs:
+            self._value_default = kwargs['default']
+        kwargs['default'] = {}
+        self._default_option_string = kwargs['option_strings'][-1]
+        super().__init__(*args, **kwargs)
+
     def __call__(self, parser, namespace, values, option_string=None):
         kw = getattr(namespace, self.dest)
-        key = option_string[2:].replace('-', '_')
+        key = self._default_option_string[2:].replace('-', '_')
         if key in kw:
             raise RuntimeError(f'duplicate key: {key}, current option string: {option_string}')
-        kw[key] = values
+        if values is None and hasattr(self, '_value_default'):
+            kw[key] = self._value_default
+        else:
+            kw[key] = values
         setattr(namespace, self.dest, kw)
-
-
-class DictFlagAction(DictAction):
-
-    def __init__(self, option_strings, dest, default, required=False, help=None):
-        self._opt_string = option_strings[-1]
-        super().__init__(option_strings=option_strings, dest=dest,
-                         default=default, required=required,
-                         help=help, nargs=0)
-
-    def __call__(self, parser, namespace, values, option_string=None):
-        super().__call__(parser, namespace, True, self._opt_string)
 
 
 def base_limit(param):
@@ -606,21 +609,21 @@ TIPS:
     parser.add_argument('-d', '--detail', action='store_true')
     parser.add_argument('-a', '--all', action='store_true')
     payer_group = parser.add_argument_group("payer config")
-    payer_group.add_argument('--start', dest='payer_args', action=DictAction, default={}, type=m, metavar='Money', help=f'default={DEFAULT_START}, tax start bound')
-    payer_group.add_argument('--fund-rate', dest='payer_args', action=DictAction, default={}, type=r, metavar='Rate', help=f'default={DEFAULT_FUND_RATE}')
-    payer_group.add_argument('--insurance-rate', dest='payer_args', action=DictAction, default={}, type=r, metavar='Rate', help=f'default={DEFAULT_INSURANCE_RATE}')
+    payer_group.add_argument('--start', dest='payer_args', action=DictAction, type=m, metavar='Money', help=f'default={DEFAULT_START}, tax start bound')
+    payer_group.add_argument('--fund-rate', dest='payer_args', action=DictAction, type=r, metavar='Rate', help=f'default={DEFAULT_FUND_RATE}')
+    payer_group.add_argument('--insurance-rate', dest='payer_args', action=DictAction, type=r, metavar='Rate', help=f'default={DEFAULT_INSURANCE_RATE}')
     limit_group = parser.add_argument_group("base limit (part of payer config)")
     bl_default = (DEFAULT_BASE_LIMIT, DEFAULT_BASE_LIMIT * DEFAULT_BASE_LIMIT_INCREASE_RATE)
-    limit_group.add_argument('--base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={bl_default}, conflict with --*-base-limit')
-    limit_group.add_argument('--fund-base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={bl_default}, conflict with --base-limit')
-    limit_group.add_argument('--insurance-base-limit', dest='payer_args', action=DictAction, default={}, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={bl_default}, conflict with --base-limit')
+    limit_group.add_argument('--base-limit', dest='payer_args', action=DictAction, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={bl_default}, conflict with --*-base-limit')
+    limit_group.add_argument('--fund-base-limit', dest='payer_args', action=DictAction, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={bl_default}, conflict with --base-limit')
+    limit_group.add_argument('--insurance-base-limit', dest='payer_args', action=DictAction, type=base_limit, metavar='BaseLimit', help=f'Money or Money,Money; default={bl_default}, conflict with --base-limit')
     calc_group = parser.add_argument_group("calc config")
-    calc_group.add_argument('--additional-free', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money')
-    calc_group.add_argument('-p', '--can-reassemble-bonus', dest='calc_args', default={}, action=DictFlagAction)
+    calc_group.add_argument('--additional-free', dest='calc_args', action=DictAction, type=m, metavar='Money')
+    calc_group.add_argument('-p', '--reassemble-bonus', dest='calc_args', action=DictAction, default=0, nargs='?', type=int, metavar='Month', help="Enable reassemble bonus. All bounses will be added and resplit with all possible tax step limit, to search the lowest tax possible. If no Month given, the bonus that as normal salary will be indenpendent item in the detail list, otherwise, it will be merged into given Month.")
     force_base_group = parser.add_argument_group("force base (part of calc config)")
-    force_base_group.add_argument('--force-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money', help="conflict with --force-*-base")
-    force_base_group.add_argument('--force-fund-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money', help="conflict with --force-base")
-    force_base_group.add_argument('--force-insurance-base', dest='calc_args', action=DictAction, default={}, type=m, metavar='Money', help="conflict with --force-base")
+    force_base_group.add_argument('--force-base', dest='calc_args', action=DictAction, type=m, metavar='Money', help="conflict with --force-*-base")
+    force_base_group.add_argument('--force-fund-base', dest='calc_args', action=DictAction, type=m, metavar='Money', help="conflict with --force-base")
+    force_base_group.add_argument('--force-insurance-base', dest='calc_args', action=DictAction, type=m, metavar='Money', help="conflict with --force-base")
     args = parser.parse_args()
     if 'base_limit' in args.payer_args:
         if 'fund_base_limit' in args.payer_args or 'insurance_base_limit' in args.payer_args:
