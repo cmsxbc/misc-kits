@@ -271,12 +271,16 @@ async def get_bookmark_title(session: aiohttp.ClientSession, bookmark: Bookmark)
     async def _get():
         async with session.get(bookmark.uri) as resp:
             data = await resp.read()
-            if resp.real_url != bookmark.uri:
+            if resp.real_url != resp.real_url.__class__(bookmark.uri):
                 logger.error('redirection found %s -> %s', bookmark.uri, resp.real_url)
             if resp.status != 200:
                 logger.warning('cannot fetch data from %s, got http code: %d', bookmark.uri, resp.status)
                 return
-            html = data.decode(resp.charset if resp.charset else "utf-8")
+            try:
+                html = data.decode(resp.charset if resp.charset else "utf-8")
+            except UnicodeDecodeError as e:
+                logger.warning('catch decode error, try use errors="replace"', exc_info=e)
+                html = data.decode(resp.charset if resp.charset else "utf-8", errors="replace")
             if ml := re.search(r'<title>([^<]*)</title>', html, re.IGNORECASE|re.MULTILINE):
                 logger.debug('%s title matched: %s', bookmark.uri, ml.group(0))
                 bookmark.title = ml.group(1)
