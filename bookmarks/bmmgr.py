@@ -22,10 +22,13 @@ import re
 import lz4.block
 import aiohttp
 import asyncio
+import PIL.Image
 
 
 logging.basicConfig()
 logger = logging.getLogger('bookmarks')
+
+ICON_SIZE = 64, 64
 
 
 @dataclasses.dataclass
@@ -189,6 +192,21 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, ic
     if b.icon_uri.startswith('data:image/'):
         return
 
+    def resize_img(img_type: str, data: bytes) -> tuple[str, bytes]:
+        ff = io.BytesIO(data)
+        img = PIL.Image.open(ff)
+        if img.width <= ICON_SIZE[0] and img.height <= ICON_SIZE[1]:
+            logger.debug("no need to resize")
+            return img_type, data
+        logger.debug("need to resize")
+        new_img = img.resize(ICON_SIZE)
+        ffo = io.BytesIO()
+        new_img.save(ffo, "PNG")
+        ffo.seek(0)
+        new_data = ffo.read()
+        logger.debug(f"compress: {len(data)} -> {len(new_data)}, {(len(data) - len(new_data)) / len(data) :.3f}")
+        return "image/png", new_data
+
     async def _get():
         cache_path = ''
         if icon_cache_dir:
@@ -208,10 +226,11 @@ async def bookmark_icon_uri2data(session: aiohttp.ClientSession, b: Bookmark, ic
             if not img_type.startswith("image"):
                 logger.warning('aio get unknown type: %s, %s', img_type, b.icon_uri)
                 return
-            data = base64.b64encode(data).decode()
             if not data:
                 logger.warning('aio get finished: %s, but there is no data', b.icon_uri)
                 return
+            img_type, data = resize_img(img_type, data)
+            data = base64.b64encode(data).decode()
             logger.debug('aio get done: %s', b.icon_uri)
             new_icon_data_uri = f'data:{img_type};base64,{data}'
             b.icon_updated = b.icon_data_uri != new_icon_data_uri
@@ -413,7 +432,7 @@ def render(bookmarks: list[Bookmark]) -> str:
 
     def _(b):
         icon = b.icon_data_uri if b.icon_data_uri else get_svg_uri(b)
-        icon_html = f'<img src="{icon}" width="64" height="64" />'
+        icon_html = f'<img src="{icon}" width="{ICON_SIZE[0]}" height="{ICON_SIZE[1]}" />'
 
         tags_html = ''.join(f'<div class="tag" data-name="{escape_element(tag)}">{escape_element(tag)}</div>' for tag in sorted(b.tags))
 
